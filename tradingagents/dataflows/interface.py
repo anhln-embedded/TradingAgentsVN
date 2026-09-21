@@ -34,8 +34,28 @@ from .y_finance import (
     get_YFin_data_online,
 )
 from .yfinance_news import get_global_news_yfinance, get_news_yfinance
+from .vn_stock import (
+    is_vn_stock,
+    get_vn_stock_data_online,
+    get_vn_stock_stats_indicators_window,
+    get_vn_fundamentals,
+    get_vn_balance_sheet,
+    get_vn_income_statement,
+    get_vn_cashflow,
+    get_vn_macro_data,
+)
 
 logger = logging.getLogger(__name__)
+
+VN_METHODS = {
+    "get_stock_data": get_vn_stock_data_online,
+    "get_indicators": get_vn_stock_stats_indicators_window,
+    "get_fundamentals": get_vn_fundamentals,
+    "get_balance_sheet": get_vn_balance_sheet,
+    "get_income_statement": get_vn_income_statement,
+    "get_cashflow": get_vn_cashflow,
+    "get_macro_indicators": lambda *a, **k: get_vn_macro_data(),
+}
 
 # Tools organized by category
 TOOLS_CATEGORIES = {
@@ -176,6 +196,11 @@ def get_vendor(category: str, method: str = None) -> str:
 
 def route_to_vendor(method: str, *args, **kwargs):
     """Route method calls to appropriate vendor implementation with fallback support."""
+    target_symbol = kwargs.get("symbol") or (args[0] if args and isinstance(args[0], str) else None)
+    if target_symbol and is_vn_stock(target_symbol) and method in VN_METHODS:
+        logger.info("Routing %s for VN symbol %r to vnstock adapter", method, target_symbol)
+        return VN_METHODS[method](*args, **kwargs)
+
     category = get_category_for_method(method)
     vendor_config = get_vendor(category, method)
     primary_vendors = [v.strip() for v in vendor_config.split(',')]

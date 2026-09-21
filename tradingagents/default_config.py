@@ -159,6 +159,7 @@ DEFAULT_CONFIG = _apply_env_overrides({
     "holding_period_days": 5,
     "benchmark_ticker": None,
     "benchmark_map": {
+        ".VN":  "^VNINDEX",    # Vietnam (VN-INDEX)
         ".NS":  "^NSEI",       # NSE India (Nifty 50)
         ".BO":  "^BSESN",      # BSE India (Sensex)
         ".T":   "^N225",       # Tokyo (Nikkei 225)

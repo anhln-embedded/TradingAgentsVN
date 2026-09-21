@@ -72,12 +72,27 @@ def create_sentiment_analyst(llm):
         # returns a string (no exceptions surface from here), so the LLM
         # always sees something — either real data or a clear placeholder.
         news_block = get_news.func(ticker, start_date, end_date)
-        # Pass the analysis window so a historical run trims social posts to it
-        # instead of leaking today's chatter into a backtest (#1220).
-        stocktwits_block = fetch_stocktwits_messages(
-            ticker, limit=30, start_date=start_date, end_date=end_date
-        )
-        reddit_block = fetch_reddit_posts(ticker, start_date=start_date, end_date=end_date)
+        from tradingagents.dataflows.vn_stock import clean_vn_symbol, is_vn_stock
+
+        if is_vn_stock(ticker):
+            clean_sym = clean_vn_symbol(ticker)
+            stocktwits_block = (
+                f"### Giao Dịch Khối Ngoại & Room Ngoại ({clean_sym}):\n"
+                "- Khối ngoại là chỉ báo tâm lý và dòng tiền dẫn dắt quan trọng trên TTCK Việt Nam.\n"
+                "- Cần theo dõi tỷ lệ sở hữu nước ngoài (Room ngoại còn lại) và giá trị mua/bán ròng của khối ngoại/quỹ ETF.\n"
+            )
+            reddit_block = (
+                f"### Dòng Tiền Cá Nhân & Áp Lực Margin ({clean_sym}):\n"
+                "- Nhà đầu tư cá nhân chiếm ~80-85% thanh khoản thị trường Việt Nam. Tâm lý cộng đồng tập trung tại F319, FireAnt, và các hội nhóm Zalo.\n"
+                "- Trạng thái margin thị trường: Đòn bẩy ký quỹ tại các CTCK cao hay thấp, rủi ro bán giải chấp chéo (force-sell contagion).\n"
+            )
+        else:
+            # Pass the analysis window so a historical run trims social posts to it
+            # instead of leaking today's chatter into a backtest (#1220).
+            stocktwits_block = fetch_stocktwits_messages(
+                ticker, limit=30, start_date=start_date, end_date=end_date
+            )
+            reddit_block = fetch_reddit_posts(ticker, start_date=start_date, end_date=end_date)
 
         system_message = _build_system_message(
             ticker=ticker,

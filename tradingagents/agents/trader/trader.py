@@ -56,9 +56,11 @@ def create_trader(llm):
                     # levels invites a percentage ("15%"), which is not a price
                     # and fails the structured parse (#1288).
                     + "State entry price and stop-loss as absolute price levels in the "
-                    "instrument's quote currency (for example 189.5), never a percentage "
+                    "instrument's quote currency (for example 189.5 or 61200), never a percentage "
                     "or a range; convert a percentage distance to the price level it "
                     "implies, or omit the field if you cannot state a number. "
+                    "For Vietnamese stocks (TTCK VN), ensure entry and stop-loss prices respect daily price limits "
+                    "(HOSE: ±7%, HNX: ±10%, UPCoM: ±15%) and account for T+2.5 settlement cycle (no short-selling). "
                     + NO_EXTERNAL_TOOLS
                     + get_language_instruction()
                 ),

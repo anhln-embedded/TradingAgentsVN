@@ -275,12 +275,13 @@ class TradingAgentsGraph:
         in USD.
         """
         from tradingagents.dataflows.symbol_utils import normalize_symbol
+        from tradingagents.dataflows.vn_stock import is_vn_stock
 
         explicit = self.config.get("benchmark_ticker")
         if explicit:
-            # Same alias mapping as the analyzed ticker; an unmapped alias finds
-            # no prices, and the decision would stay pending for good.
             return normalize_symbol(explicit)
+        if is_vn_stock(ticker):
+            return "^VNINDEX"
         benchmark_map = self.config.get("benchmark_map", {})
         ticker_upper = normalize_symbol(ticker)
         for suffix, benchmark in benchmark_map.items():

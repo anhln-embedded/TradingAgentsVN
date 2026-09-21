@@ -110,6 +110,26 @@ def resolve_instrument_identity(ticker: str) -> dict:
     resolves for the same instrument the price path actually fetches (#983).
     """
     from tradingagents.dataflows.symbol_utils import normalize_symbol
+    from tradingagents.dataflows.vn_stock import clean_vn_symbol, is_vn_stock
+
+    if is_vn_stock(ticker):
+        try:
+            from vnstock.api.company import Company
+            c = Company(symbol=clean_vn_symbol(ticker), source="VCI", show_log=False)
+            ov = c.overview()
+            if ov is not None and not ov.empty:
+                row = ov.iloc[0]
+                com_group = str(row.get("com_group_code", "HOSE"))
+                ex_name = "HOSE" if "VNINDEX" in com_group or "HOSE" in com_group else ("HNX" if "HNX" in com_group else "UPCoM")
+                return {
+                    "company_name": str(row.get("organ_name", ticker)),
+                    "sector": str(row.get("sector", "")),
+                    "industry": str(row.get("sector", "")),
+                    "exchange": ex_name,
+                    "currency": "VND",
+                }
+        except Exception as exc:
+            logger.debug("Could not resolve VN instrument identity for %s: %s", ticker, exc)
 
     try:
         info = yf.Ticker(normalize_symbol(ticker)).info or {}
@@ -194,6 +214,14 @@ def build_instrument_context(
         context += (
             " Treat it as a crypto asset rather than a company, and do not "
             "assume company fundamentals are available."
+        )
+    elif is_vn_stock(ticker):
+        context += (
+            " This instrument trades on the Vietnamese Stock Market (TTCK VN). "
+            "Market rules: Settlement cycle is T+2.5 (shares purchased on T+0 become sellable on the afternoon of T+2). "
+            "No short-selling (bán khống) on underlying equities; recommendations must only be Buy, Hold, or Sell existing holdings. "
+            "Daily price fluctuation limits apply based on exchange (HOSE: ±7%, HNX: ±10%, UPCoM: ±15%) relative to reference price. "
+            "Currency is VND."
         )
     return context
 

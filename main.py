@@ -1,3 +1,7 @@
+import sys
+if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 
@@ -11,8 +15,8 @@ config = DEFAULT_CONFIG.copy()
 # Initialize with custom config
 ta = TradingAgentsGraph(debug=True, config=config)
 
-# forward propagate
-_, decision = ta.propagate("NVDA", "2026-09-01")
+# forward propagate for Vietnamese stock
+_, decision = ta.propagate("VNM", "2024-05-10")
 print(decision)
 
 # Memorize mistakes and reflect
