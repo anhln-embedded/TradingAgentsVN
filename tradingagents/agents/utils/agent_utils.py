@@ -49,6 +49,7 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 from tradingagents.dataflows.utils import get_current_date  # noqa: E402
+from tradingagents.dataflows.vn_stock import clean_vn_symbol, is_vn_stock
 
 
 def get_language_instruction() -> str:
