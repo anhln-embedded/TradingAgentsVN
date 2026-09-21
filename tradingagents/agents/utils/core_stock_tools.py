@@ -25,4 +25,7 @@ def get_stock_data(
         str: A formatted dataframe containing the stock price data for the specified ticker symbol in the specified date range.
     """
     start_date, end_date = as_of_window(start_date, end_date, trade_date)
-    return route_to_vendor("get_stock_data", symbol, start_date, end_date)
+    try:
+        return route_to_vendor("get_stock_data", symbol, start_date, end_date)
+    except Exception as e:
+        return f"Không thể lấy dữ liệu giá cổ phiếu cho {symbol}: {e}"

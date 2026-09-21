@@ -34,6 +34,6 @@ def get_indicators(
     for ind in indicators:
         try:
             results.append(route_to_vendor("get_indicators", symbol, ind, curr_date, look_back_days))
-        except ValueError as e:
-            results.append(str(e))
+        except Exception as e:
+            results.append(f"Không thể lấy chỉ báo {ind} cho {symbol}: {e}")
     return "\n\n".join(results)

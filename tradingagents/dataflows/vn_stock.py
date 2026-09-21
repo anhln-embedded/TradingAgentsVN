@@ -17,7 +17,9 @@ from typing import Annotated, Any, Dict, List, Optional
 import pandas as pd
 import requests
 from dateutil.relativedelta import relativedelta
+from requests.adapters import HTTPAdapter
 from stockstats import wrap
+from urllib3.util.retry import Retry
 
 from .errors import NoMarketDataError
 
@@ -112,12 +114,23 @@ _BEST_IND_PARAMS = {
     ),
 }
 
-# Reusable HTTP session with browser headers for Vietnamese market endpoints
+# Reusable HTTP session with browser headers and retries for Vietnamese market endpoints
 _HTTP_SESSION = requests.Session()
 _HTTP_SESSION.headers.update({
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Accept": "application/json",
 })
+_retry_strategy = Retry(
+    total=2,
+    backoff_factor=0.2,
+    status_forcelist=[429, 500, 502, 503, 504],
+    raise_on_status=False,
+)
+_adapter = HTTPAdapter(max_retries=_retry_strategy)
+_HTTP_SESSION.mount("https://", _adapter)
+_HTTP_SESSION.mount("http://", _adapter)
+
+_OHLCV_CACHE: Dict[str, pd.DataFrame] = {}
 
 
 def _ensure_session_cookies():
@@ -149,11 +162,9 @@ def clean_vn_symbol(symbol: str) -> str:
     return s
 
 
-def fetch_vn_ohlcv(symbol: str, count_back: int = 350, end_date: Optional[str] = None) -> pd.DataFrame:
-    """Direct high-speed REST fetcher for Vietnamese stock OHLCV history."""
-    clean_sym = clean_vn_symbol(symbol)
+def _fetch_vietcap_ohlcv(clean_sym: str, count_back: int, end_date: Optional[str]) -> pd.DataFrame:
+    """Fetch OHLCV from Vietcap trading API."""
     url = "https://trading.vietcap.com.vn/api/chart/OHLCChart/gap-chart"
-
     if end_date:
         end_dt = datetime.strptime(end_date, "%Y-%m-%d")
         to_ts = int(end_dt.timestamp()) + 86400
@@ -166,33 +177,94 @@ def fetch_vn_ohlcv(symbol: str, count_back: int = 350, end_date: Optional[str] =
         "to": to_ts,
         "countBack": max(count_back, 60),
     }
+    r = _HTTP_SESSION.post(url, json=payload, timeout=6)
+    if r.status_code != 200:
+        raise ValueError(f"Vietcap API status {r.status_code}")
+    data = r.json()
+    if not data or not isinstance(data, list):
+        raise ValueError(f"Không có dữ liệu trả về từ Vietcap cho mã {clean_sym}")
+    item = data[0]
+    raw_t = item.get("t", [])
+    if not raw_t:
+        raise ValueError(f"Không có dữ liệu nến từ Vietcap cho mã {clean_sym}")
 
+    timestamps = pd.Series(raw_t).astype(int)
+    dates = pd.to_datetime(timestamps, unit="s").dt.normalize()
+
+    df = pd.DataFrame({
+        "Date": dates,
+        "Open": item.get("o", []),
+        "High": item.get("h", []),
+        "Low": item.get("l", []),
+        "Close": item.get("c", []),
+        "Volume": item.get("v", []),
+    })
+    return df.sort_values("Date").reset_index(drop=True)
+
+
+def _fetch_dnse_ohlcv(clean_sym: str, count_back: int, end_date: Optional[str]) -> pd.DataFrame:
+    """Fallback fetcher for OHLCV from DNSE Entrade chart API."""
+    if end_date:
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+        to_ts = int(end_dt.timestamp()) + 86400
+    else:
+        to_ts = int(datetime.now().timestamp()) + 86400
+
+    # Ensure enough span for count_back trading days (approx 2 calendar days per trading day)
+    from_ts = to_ts - max(count_back, 60) * 86400 * 2
+
+    url = f"https://services.entrade.com.vn/chart-api/v2/ohlcs/stock?from={from_ts}&to={to_ts}&symbol={clean_sym}&resolution=1D"
+    r = _HTTP_SESSION.get(url, timeout=6)
+    if r.status_code != 200:
+        raise ValueError(f"DNSE API status {r.status_code}")
+    data = r.json()
+    raw_t = data.get("t", [])
+    if not raw_t:
+        raise ValueError(f"Không có dữ liệu nến từ DNSE cho mã {clean_sym}")
+
+    timestamps = pd.Series(raw_t).astype(int)
+    dates = pd.to_datetime(timestamps, unit="s").dt.normalize()
+
+    # DNSE prices are scaled in thousands VND (e.g. 88.6 = 88,600 VND)
+    df = pd.DataFrame({
+        "Date": dates,
+        "Open": [float(x) * 1000 for x in data.get("o", [])],
+        "High": [float(x) * 1000 for x in data.get("h", [])],
+        "Low": [float(x) * 1000 for x in data.get("l", [])],
+        "Close": [float(x) * 1000 for x in data.get("c", [])],
+        "Volume": [int(x) for x in data.get("v", [])],
+    })
+    df = df.sort_values("Date").tail(max(count_back, 60)).reset_index(drop=True)
+    return df
+
+
+def fetch_vn_ohlcv(symbol: str, count_back: int = 350, end_date: Optional[str] = None) -> pd.DataFrame:
+    """Direct high-speed REST fetcher for Vietnamese stock OHLCV history with multi-provider fallback and caching."""
+    clean_sym = clean_vn_symbol(symbol)
+    cache_key = f"{clean_sym}:{count_back}:{end_date}"
+    if cache_key in _OHLCV_CACHE:
+        return _OHLCV_CACHE[cache_key].copy()
+
+    # 1. Try Vietcap primary endpoint
     try:
-        r = _HTTP_SESSION.post(url, json=payload, timeout=10)
-        data = r.json()
-        if not data or not isinstance(data, list):
-            raise NoMarketDataError(f"Không có dữ liệu trả về cho mã {clean_sym}")
-        item = data[0]
-        raw_t = item.get("t", [])
-        if not raw_t:
-            raise NoMarketDataError(f"Không có dữ liệu nến cho mã {clean_sym}")
+        df = _fetch_vietcap_ohlcv(clean_sym, count_back, end_date)
+        if not df.empty:
+            _OHLCV_CACHE[cache_key] = df
+            return df.copy()
+    except Exception as e_vc:
+        logger.warning(f"Vietcap API lỗi ({e_vc}), tự động chuyển sang nguồn dự phòng DNSE Entrade cho {clean_sym}...")
 
-        timestamps = pd.Series(raw_t).astype(int)
-        dates = pd.to_datetime(timestamps, unit="s")
+    # 2. Try DNSE Entrade fallback endpoint
+    try:
+        df = _fetch_dnse_ohlcv(clean_sym, count_back, end_date)
+        if not df.empty:
+            _OHLCV_CACHE[cache_key] = df
+            return df.copy()
+    except Exception as e_dnse:
+        logger.error(f"Cả Vietcap và DNSE đều không tải được OHLCV cho {clean_sym}: {e_dnse}")
+        raise NoMarketDataError(f"Không thể tải dữ liệu OHLCV cho {clean_sym} từ các nguồn dữ liệu TTCK VN") from e_dnse
 
-        df = pd.DataFrame({
-            "Date": dates,
-            "Open": item.get("o", []),
-            "High": item.get("h", []),
-            "Low": item.get("l", []),
-            "Close": item.get("c", []),
-            "Volume": item.get("v", []),
-        })
-        df = df.sort_values("Date").reset_index(drop=True)
-        return df
-    except Exception as e:
-        logger.error(f"Lỗi tải OHLCV cho {clean_sym}: {e}")
-        raise NoMarketDataError(f"Lỗi tải OHLCV cho {clean_sym}: {e}") from e
+    raise NoMarketDataError(f"Không có dữ liệu trả về cho mã {clean_sym}")
 
 
 def get_vn_stock_data_online(
