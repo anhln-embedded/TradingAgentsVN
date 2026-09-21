@@ -115,18 +115,20 @@ def resolve_instrument_identity(ticker: str) -> dict:
 
     if is_vn_stock(ticker):
         try:
-            from vnstock.api.company import Company
-            c = Company(symbol=clean_vn_symbol(ticker), source="VCI", show_log=False)
-            ov = c.overview()
-            if ov is not None and not ov.empty:
-                row = ov.iloc[0]
-                com_group = str(row.get("com_group_code", "HOSE"))
-                ex_name = "HOSE" if "VNINDEX" in com_group or "HOSE" in com_group else ("HNX" if "HNX" in com_group else "UPCoM")
+            import requests
+            clean_sym = clean_vn_symbol(ticker)
+            r = requests.get(
+                f"https://iq.vietcap.com.vn/api/iq-insight-service/v1/company/details?ticker={clean_sym}",
+                headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
+                timeout=5,
+            )
+            if r.status_code == 200:
+                data = r.json().get("data", {})
                 return {
-                    "company_name": str(row.get("organ_name", ticker)),
-                    "sector": str(row.get("sector", "")),
-                    "industry": str(row.get("sector", "")),
-                    "exchange": ex_name,
+                    "company_name": data.get("enOrganName") or data.get("organCode") or clean_sym,
+                    "sector": data.get("tag", "Chứng khoán Việt Nam"),
+                    "industry": data.get("tag", "Chứng khoán Việt Nam"),
+                    "exchange": "HOSE",
                     "currency": "VND",
                 }
         except Exception as exc:

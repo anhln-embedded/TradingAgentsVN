@@ -20,20 +20,14 @@ def get_macro_indicators(
         int | None, "Trailing window length in days; omit for a 1-year window"
     ] = None,
     trade_date: Annotated[str, InjectedState("trade_date")] = "",
+    ticker: Annotated[str, InjectedState("ticker")] = "",
 ) -> str:
+    """Retrieve macroeconomic indicators (policy rates, inflation, labor, growth).
+    For Vietnamese stocks, returns SBV monetary policy and macro context.
     """
-    Retrieve a macroeconomic indicator time series from FRED (Federal Reserve
-    Economic Data): policy rates, Treasury yields, inflation, labor, and growth.
-    Returns the series title, units, frequency, the latest value, the change
-    over the window, and a recent observation table. Uses the configured
-    macro_data vendor.
+    from tradingagents.dataflows.vn_stock import is_vn_stock, get_vn_macro_data
 
-    Args:
-        indicator (str): Friendly alias or raw FRED series ID
-        curr_date (str): Current date in yyyy-mm-dd format
-        look_back_days (int): Trailing window length; omit for a 1-year window
+    if ticker and is_vn_stock(ticker):
+        return get_vn_macro_data()
 
-    Returns:
-        str: A formatted markdown report of the macro series
-    """
     return route_to_vendor("get_macro_indicators", indicator, as_of(curr_date, trade_date), look_back_days)

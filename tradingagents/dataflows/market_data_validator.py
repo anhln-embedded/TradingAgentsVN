@@ -32,6 +32,19 @@ def _verified_rows(symbol: str, curr_date: str) -> pd.DataFrame:
     look-ahead rows, but we re-apply the cutoff defensively — this is a
     verification path, so it must not trust its input to be pre-filtered.
     """
+    from tradingagents.dataflows.vn_stock import is_vn_stock, fetch_vn_ohlcv
+
+    if is_vn_stock(symbol):
+        df = fetch_vn_ohlcv(symbol, count_back=350, end_date=curr_date)
+        if df is None or df.empty:
+            raise ValueError(f"No OHLCV data available for VN symbol {symbol}.")
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+        df = df.dropna(subset=["Date"])
+        df = df[df["Date"] <= pd.to_datetime(curr_date)].sort_values("Date")
+        if df.empty:
+            raise ValueError(f"No OHLCV rows on or before {curr_date} for VN symbol {symbol}.")
+        return df
+
     # As reported: this snapshot is quoted by the agents as exact prices, so a
     # gap-filled cell would put the previous session's number under this date.
     data = load_ohlcv(symbol, curr_date, fill_gaps=False)

@@ -15,8 +15,12 @@ config = DEFAULT_CONFIG.copy()
 # Initialize with custom config
 ta = TradingAgentsGraph(debug=True, config=config)
 
-# forward propagate for Vietnamese stock
-_, decision = ta.propagate("VNM", "2024-05-10")
+from datetime import datetime
+
+# forward propagate for Vietnamese stock using current date (2026-09-21)
+trade_date = datetime.now().strftime("%Y-%m-%d")
+print(f"=== Đang phân tích cổ phiếu VNM theo dữ liệu thị trường ngày: {trade_date} ===")
+_, decision = ta.propagate("VNM", trade_date)
 print(decision)
 
 # Memorize mistakes and reflect
