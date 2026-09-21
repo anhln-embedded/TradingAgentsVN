@@ -20,14 +20,14 @@ def get_macro_indicators(
         int | None, "Trailing window length in days; omit for a 1-year window"
     ] = None,
     trade_date: Annotated[str, InjectedState("trade_date")] = "",
-    ticker: Annotated[str, InjectedState("ticker")] = "",
+    company_of_interest: Annotated[str, InjectedState("company_of_interest")] = "",
 ) -> str:
     """Retrieve macroeconomic indicators (policy rates, inflation, labor, growth).
     For Vietnamese stocks, returns SBV monetary policy and macro context.
     """
     from tradingagents.dataflows.vn_stock import is_vn_stock, get_vn_macro_data
 
-    if ticker and is_vn_stock(ticker):
+    if company_of_interest and is_vn_stock(company_of_interest):
         return get_vn_macro_data()
 
     return route_to_vendor("get_macro_indicators", indicator, as_of(curr_date, trade_date), look_back_days)

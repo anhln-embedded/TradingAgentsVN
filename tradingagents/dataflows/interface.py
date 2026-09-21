@@ -43,6 +43,9 @@ from .vn_stock import (
     get_vn_income_statement,
     get_vn_cashflow,
     get_vn_macro_data,
+    get_vn_news,
+    get_vn_global_news,
+    get_vn_insider_transactions,
 )
 
 logger = logging.getLogger(__name__)
@@ -55,6 +58,9 @@ VN_METHODS = {
     "get_income_statement": get_vn_income_statement,
     "get_cashflow": get_vn_cashflow,
     "get_macro_indicators": lambda *a, **k: get_vn_macro_data(),
+    "get_news": get_vn_news,
+    "get_global_news": get_vn_global_news,
+    "get_insider_transactions": get_vn_insider_transactions,
 }
 
 # Tools organized by category
@@ -196,7 +202,7 @@ def get_vendor(category: str, method: str = None) -> str:
 
 def route_to_vendor(method: str, *args, **kwargs):
     """Route method calls to appropriate vendor implementation with fallback support."""
-    target_symbol = kwargs.get("symbol") or (args[0] if args and isinstance(args[0], str) else None)
+    target_symbol = kwargs.get("symbol") or kwargs.get("ticker") or (args[0] if args and isinstance(args[0], str) else None)
     if target_symbol and is_vn_stock(target_symbol) and method in VN_METHODS:
         logger.info("Routing %s for VN symbol %r to vnstock adapter", method, target_symbol)
         return VN_METHODS[method](*args, **kwargs)

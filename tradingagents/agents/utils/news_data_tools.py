@@ -25,7 +25,10 @@ def get_news(
         str: A formatted string containing news data
     """
     start_date, end_date = as_of_window(start_date, end_date, trade_date)
-    return route_to_vendor("get_news", ticker, start_date, end_date)
+    try:
+        return route_to_vendor("get_news", ticker, start_date, end_date, symbol=ticker)
+    except Exception as e:
+        return f"Lỗi lấy tin tức cho {ticker}: {e}"
 
 @tool
 def get_global_news(
@@ -33,6 +36,7 @@ def get_global_news(
     look_back_days: Annotated[int | None, "Days to look back; omit to use the configured default"] = None,
     limit: Annotated[int | None, "Max articles to return; omit to use the configured default"] = None,
     trade_date: Annotated[str, InjectedState("trade_date")] = "",
+    company_of_interest: Annotated[str, InjectedState("company_of_interest")] = "",
 ) -> str:
     """
     Retrieve global news data.
@@ -48,7 +52,10 @@ def get_global_news(
     Returns:
         str: A formatted string containing global news data
     """
-    return route_to_vendor("get_global_news", as_of(curr_date, trade_date), look_back_days, limit)
+    try:
+        return route_to_vendor("get_global_news", as_of(curr_date, trade_date), look_back_days, limit, symbol=company_of_interest)
+    except Exception as e:
+        return f"Lỗi lấy tin tức vĩ mô thị trường: {e}"
 
 @tool
 def get_insider_transactions(
@@ -63,4 +70,7 @@ def get_insider_transactions(
     Returns:
         str: A report of insider transaction data
     """
-    return route_to_vendor("get_insider_transactions", ticker, trade_date or None)
+    try:
+        return route_to_vendor("get_insider_transactions", ticker, trade_date or None, symbol=ticker)
+    except Exception as e:
+        return f"Lỗi lấy giao dịch nội bộ cho {ticker}: {e}"

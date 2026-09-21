@@ -554,3 +554,147 @@ def get_vn_macro_data() -> str:
    - Chu kỳ thanh toán: T+2.5 (mua T+0 -> cổ phiếu về tài khoản chiều T+2).
    - KHÔNG CÓ BÁN KHỐNG (No short selling) trên thị trường cổ phiếu cơ sở.
 """
+
+
+def get_vn_corporate_disclosures(symbol: str, limit: int = 8) -> str:
+    """Fetch official corporate disclosures, board resolutions, and announcements from KBS API."""
+    clean_sym = clean_vn_symbol(symbol)
+    items_found: List[str] = []
+
+    try:
+        url_kbs = f"https://kbbuddywts.kbsec.com.vn/iis-server/investment/stockinfo/news/{clean_sym}"
+        r_kbs = _HTTP_SESSION.get(url_kbs, params={"l": 1, "p": 1, "s": max(limit, 10)}, timeout=6)
+        if r_kbs.status_code == 200:
+            kbs_data = r_kbs.json()
+            if isinstance(kbs_data, list):
+                for item in kbs_data[:limit]:
+                    pub = (item.get("PublishTime") or "")[:10]
+                    title = (item.get("Title") or "").strip()
+                    head = (item.get("Head") or "").strip()
+                    desc = f": {head}" if head and head != title else ""
+                    if title:
+                        items_found.append(f"- **[{pub}]** {title}{desc}")
+    except Exception as e:
+        logger.debug(f"Lỗi lấy KBS disclosures cho {clean_sym}: {e}")
+
+    if not items_found:
+        return f"Hiện chưa có công bố thông tin hay nghị quyết HĐQT mới được ghi nhận cho mã {clean_sym}."
+
+    header = f"### Công Bố Thông Tin & Nghị Quyết HĐQT ({clean_sym}):\n\n"
+    return header + "\n".join(items_found)
+
+
+def get_vn_news(*args: Any, **kwargs: Any) -> str:
+    """Fetch company news from Vietnamese financial media (CafeF, Vietstock, VnEconomy, etc.) and official disclosures."""
+    import xml.etree.ElementTree as ET
+    symbol = kwargs.get("symbol") or kwargs.get("ticker") or (args[0] if args else "")
+    clean_sym = clean_vn_symbol(str(symbol))
+    items_found: List[str] = []
+
+    # 1. Official Corporate Disclosures & Board Resolutions
+    try:
+        url_kbs = f"https://kbbuddywts.kbsec.com.vn/iis-server/investment/stockinfo/news/{clean_sym}"
+        r_kbs = _HTTP_SESSION.get(url_kbs, params={"l": 1, "p": 1, "s": 6}, timeout=5)
+        if r_kbs.status_code == 200:
+            kbs_data = r_kbs.json()
+            if isinstance(kbs_data, list):
+                for item in kbs_data[:4]:
+                    pub = (item.get("PublishTime") or "")[:10]
+                    title = (item.get("Title") or "").strip()
+                    head = (item.get("Head") or "").strip()
+                    desc = f": {head}" if head and head != title else ""
+                    if title:
+                        items_found.append(f"- **[{pub}] [Công bố thông tin / HĐQT]** {title}{desc}")
+    except Exception as e:
+        logger.debug(f"Lỗi lấy KBS disclosures cho {clean_sym}: {e}")
+
+    # 2. Financial press articles via Google News Vietnam
+    try:
+        query = f"cổ phiếu {clean_sym}"
+        url_gnews = f"https://news.google.com/rss/search?q={requests.utils.quote(query)}&hl=vi&gl=VN&ceid=VN:vi"
+        r_gnews = _HTTP_SESSION.get(url_gnews, timeout=6)
+        if r_gnews.status_code == 200:
+            root = ET.fromstring(r_gnews.content)
+            for item in root.findall(".//item")[:10]:
+                pub_elem = item.find("pubDate")
+                title_elem = item.find("title")
+                pub_text = pub_elem.text[:16] if pub_elem is not None and pub_elem.text else ""
+                title_text = title_elem.text if title_elem is not None and title_elem.text else ""
+                if title_text:
+                    items_found.append(f"- **[{pub_text}] [Báo chí tài chính]** {title_text}")
+    except Exception as e:
+        logger.debug(f"Lỗi lấy Google News cho {clean_sym}: {e}")
+
+    if not items_found:
+        return f"Hiện chưa có tin tức sự kiện mới được ghi nhận cho mã cổ phiếu {clean_sym}."
+
+    header = f"### Tin Tức & Công Bố Thông Tin Cổ Phiếu {clean_sym} (Thị Trường Việt Nam):\n\n"
+    return header + "\n".join(items_found)
+
+
+def get_vn_global_news(*args: Any, **kwargs: Any) -> str:
+    """Fetch broad macroeconomic and Vietnam stock market news (CafeF RSS + Macro news)."""
+    import xml.etree.ElementTree as ET
+    items_found: List[str] = []
+
+    # 1. CafeF Market News RSS
+    try:
+        r_cf = _HTTP_SESSION.get("https://cafef.vn/thi-truong-chung-khoan.rss", timeout=5)
+        if r_cf.status_code == 200:
+            root = ET.fromstring(r_cf.content)
+            for item in root.findall(".//item")[:6]:
+                title = item.find("title").text if item.find("title") is not None else ""
+                pub = item.find("pubDate").text[:16] if item.find("pubDate") is not None else ""
+                if title:
+                    items_found.append(f"- **[{pub}] [CafeF Thị Trường]** {title}")
+    except Exception as e:
+        logger.debug(f"Lỗi lấy CafeF RSS: {e}")
+
+    # 2. VN-Index & Macro developments
+    try:
+        url_macro = "https://news.google.com/rss/search?q=th%E1%BB%8B+tr%C6%B0%E1%BB%9Dng+ch%E1%BB%A9ng+kho%C3%A1n+Vi%E1%BB%87t+Nam+VN-Index&hl=vi&gl=VN&ceid=VN:vi"
+        r_macro = _HTTP_SESSION.get(url_macro, timeout=6)
+        if r_macro.status_code == 200:
+            root = ET.fromstring(r_macro.content)
+            for item in root.findall(".//item")[:6]:
+                title = item.find("title").text if item.find("title") is not None else ""
+                pub = item.find("pubDate").text[:16] if item.find("pubDate") is not None else ""
+                if title:
+                    items_found.append(f"- **[{pub}] [Vĩ mô & TTCK Việt Nam]** {title}")
+    except Exception as e:
+        logger.debug(f"Lỗi lấy Google News vĩ mô VN: {e}")
+
+    if not items_found:
+        return "Không có tin tức vĩ mô mới được ghi nhận."
+
+    header = "### Điểm Tin Vĩ Mô & Thị Trường Chứng Khoán Việt Nam (VN-Index):\n\n"
+    return header + "\n".join(items_found)
+
+
+def get_vn_insider_transactions(*args: Any, **kwargs: Any) -> str:
+    """Fetch insider trading and major shareholder transactions for Vietnamese equities."""
+    symbol = kwargs.get("symbol") or kwargs.get("ticker") or (args[0] if args else "")
+    clean_sym = clean_vn_symbol(str(symbol))
+    items_found: List[str] = []
+
+    try:
+        url_kbs = f"https://kbbuddywts.kbsec.com.vn/iis-server/investment/stockinfo/news/{clean_sym}"
+        r_kbs = _HTTP_SESSION.get(url_kbs, params={"l": 1, "p": 1, "s": 25}, timeout=5)
+        if r_kbs.status_code == 200:
+            kbs_data = r_kbs.json()
+            if isinstance(kbs_data, list):
+                keywords = ["cổ đông", "nội bộ", "hđqt", "bổ nhiệm", "miễn nhiệm", "giao dịch", "cổ tức", "mua", "bán", "thoái vốn"]
+                for item in kbs_data:
+                    title = (item.get("Title") or "").strip()
+                    pub = (item.get("PublishTime") or "")[:10]
+                    if any(k in title.lower() for k in keywords):
+                        items_found.append(f"- **[{pub}]** {title}")
+    except Exception as e:
+        logger.debug(f"Lỗi lấy insider transactions cho {clean_sym}: {e}")
+
+    if not items_found:
+        return f"Không có báo cáo giao dịch nội bộ hay biến động cổ đông lớn gần đây cho mã {clean_sym}."
+
+    header = f"### Giao Dịch Cổ Đông Lớn & Thay Đổi Nhân Sự HĐQT ({clean_sym}):\n\n"
+    return header + "\n".join(items_found[:8])
+
