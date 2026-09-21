@@ -301,24 +301,42 @@ def get_vn_fundamentals(symbol: str, *args: Any, **kwargs: Any) -> str:
     clean_sym = clean_vn_symbol(symbol)
     lines = [f"# BÁO CÁO PHÂN TÍCH DOANH NGHIỆP: {clean_sym} (Thị trường Chứng khoán Việt Nam)\n"]
 
-    # 1. Company details
-    details_url = f"https://iq.vietcap.com.vn/api/iq-insight-service/v1/company/details?ticker={clean_sym}"
+    curr_date = kwargs.get("curr_date") or (args[0] if args and isinstance(args[0], str) and "-" in args[0] else None)
+
+    # 1. Real-time / latest settled price from daily OHLCV
     curr_price = "N/A"
     market_cap = "N/A"
     shares = "N/A"
     organ_code = clean_sym
+    latest_p_val = None
 
+    try:
+        df_p = fetch_vn_ohlcv(clean_sym, count_back=5, end_date=curr_date)
+        if not df_p.empty:
+            latest_p_val = float(df_p["Close"].iloc[-1])
+            curr_price = f"{latest_p_val:,.0f} VND ({latest_p_val / 1000:.2f})"
+    except Exception as e:
+        logger.debug(f"Không lấy được nến giá cho {clean_sym}: {e}")
+
+    # 2. Company profile details
+    details_url = f"https://iq.vietcap.com.vn/api/iq-insight-service/v1/company/details?ticker={clean_sym}"
     try:
         r = _HTTP_SESSION.get(details_url, timeout=6)
         if r.status_code == 200:
             data = r.json().get("data", {})
             if data:
-                raw_p = data.get("currentPrice")
-                curr_price = f"{float(raw_p):,.0f} VND" if raw_p else "N/A"
+                if curr_price == "N/A" and data.get("currentPrice"):
+                    latest_p_val = float(data["currentPrice"])
+                    curr_price = f"{latest_p_val:,.0f} VND ({latest_p_val / 1000:.2f})"
                 raw_mc = data.get("marketCap")
-                market_cap = f"{float(raw_mc) / 1e9:,.1f} tỷ VND" if raw_mc else "N/A"
                 raw_sh = data.get("issueShare") or data.get("numberOfSharesMktCap")
-                shares = f"{int(raw_sh):,} CP" if raw_sh else "N/A"
+                if raw_sh:
+                    n_shares = int(raw_sh)
+                    shares = f"{n_shares:,} CP"
+                    if latest_p_val:
+                        market_cap = f"{latest_p_val * n_shares / 1e9:,.1f} tỷ VND"
+                if market_cap == "N/A" and raw_mc:
+                    market_cap = f"{float(raw_mc) / 1e9:,.1f} tỷ VND"
                 organ_code = data.get("organCode", clean_sym)
     except Exception as e:
         logger.warning(f"Lỗi lấy chi tiết công ty {clean_sym}: {e}")
