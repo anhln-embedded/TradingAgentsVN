@@ -1,0 +1,42 @@
+name: tradingagents-vn
+services:
+  dashboard:
+    image: tradingagents-vn:${APP_VERSION:-local}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      args:
+        APP_REVISION: ${APP_VERSION:-local}
+    env_file: .env
+    environment:
+      TA_ENV: production
+      TA_DATA_DIR: /data
+      TA_RUNTIME_ENV_FILE: /data/config/runtime.env
+      TA_ALLOW_GIT_UPDATES: "false"
+      TZ: Asia/Ho_Chi_Minh
+    ports:
+      - "127.0.0.1:${APP_PORT:-8000}:8000"
+    volumes:
+      - app_data:/data
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=128m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    stop_grace_period: 310s
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      start_period: 90s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+volumes:
+  app_data:

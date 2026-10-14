@@ -13,3 +13,12 @@ results
 eval_results
 Dockerfile
 docker-compose.yml
+deploy/.env
+deploy/.env.*
+.updates
+backups
+.agents
+.codex
+tests
+tests_vn
+.github

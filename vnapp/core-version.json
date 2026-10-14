@@ -1,0 +1,6 @@
+{
+  "repository": "https://github.com/TauricResearch/TradingAgents.git",
+  "upstream_commit": "2d17df8da1536c121e4d7395ac5a5dcec9e96d6f",
+  "vietnam_fork_commit": "c40eebf72246b2b41b7060e3a8d2fdfd11ca1a61",
+  "strategy": "tested-vietnam-fork"
+}

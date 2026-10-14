@@ -1,0 +1,734 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TradingAgents VN | Hệ thống AI Phân Tích Đa Tác Tử TTCK</title>
+  <!-- Google Fonts: Inter & Outfit -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet">
+  <!-- Lucide Icons CDN -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <!-- TradingView Lightweight Charts CDN -->
+  <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+  <!-- Marked Markdown Parser CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <!-- Anti-cache Headers -->
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <!-- Stylesheet with Cache Buster -->
+  <link rel="stylesheet" href="/static/style.css?v=2.6">
+</head>
+<body>
+  <div class="app-container">
+    <!-- TOP NAVIGATION -->
+    <header class="navbar">
+      <div class="nav-left">
+        <div class="brand-logo">
+          <div class="logo-icon">
+            <i data-lucide="bot"></i>
+          </div>
+          <div class="brand-text">
+            <div class="brand-title">TradingAgents <span class="badge-vn">VN</span></div>
+            <div class="brand-sub">Multi-Agent Financial LLM Intelligence</div>
+          </div>
+        </div>
+
+        <!-- Quick Ticker Chips -->
+        <div class="quick-tickers" id="quickTickers">
+          <!-- Rendered via JS -->
+        </div>
+      </div>
+
+      <div class="nav-right">
+        <!-- AI Config Button -->
+        <button class="btn btn-secondary" id="btnOpenConfig" title="Cấu hình Nhà Cung Cấp AI & API Key">
+          <i data-lucide="sliders"></i>
+          <span>Cấu hình AI</span>
+        </button>
+
+        <!-- Git Upstream Update Button -->
+        <button class="btn btn-secondary" id="btnOpenGit" title="Kiểm tra & Cập nhật Upstream từ TradingAgents gốc">
+          <i data-lucide="git-pull-request"></i>
+          <span>Cập nhật Upstream</span>
+        </button>
+
+        <!-- History Button -->
+        <button class="btn btn-secondary" id="btnOpenHistory" title="Xem lịch sử báo cáo">
+          <i data-lucide="history"></i>
+          <span>Lịch sử Báo Cáo</span>
+        </button>
+
+        <!-- Status Pill -->
+        <div class="status-indicator ready" id="systemStatus">
+          <span class="status-dot"></span>
+          <span class="status-label">Hệ thống sẵn sàng</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- CONTROL PANEL & TICKER INPUT -->
+    <section class="control-panel">
+      <div class="control-card">
+        <div class="control-row">
+          <div class="control-config">
+            <div class="input-group ticker-input-wrap">
+              <label for="tickerInput"><i data-lucide="trending-up"></i> Mã Chứng Khoán</label>
+              <div class="input-with-icon">
+                <input type="text" id="tickerInput" placeholder="VD: BSR, FPT, VNM, HPG..." value="BSR" autocomplete="off" spellcheck="false">
+                <span class="input-badge" id="tickerExchangeBadge">HOSE</span>
+              </div>
+            </div>
+
+            <div class="input-group date-input-wrap">
+              <div class="label-with-meta">
+                <label for="tradeDateInput"><i data-lucide="calendar"></i> Ngày Giao Dịch</label>
+                <button type="button" class="btn-today-shortcut" id="btnSetToday" title="Đặt lại về ngày hôm nay">Hôm nay</button>
+              </div>
+              <div class="date-input-container">
+                <input type="date" id="tradeDateInput">
+              </div>
+            </div>
+
+            <div class="input-group">
+              <label><i data-lucide="users"></i> Đội Ngũ Chuyên Gia Phân Tích</label>
+              <div class="analyst-pills" id="analystPills">
+                <label class="pill-checkbox active"><input type="checkbox" value="market" checked> Kỹ thuật</label>
+                <label class="pill-checkbox active"><input type="checkbox" value="fundamentals" checked> Cơ bản</label>
+                <label class="pill-checkbox active"><input type="checkbox" value="social" checked> Tâm lý</label>
+                <label class="pill-checkbox active"><input type="checkbox" value="news" checked> Tin tức</label>
+              </div>
+            </div>
+
+          </div>
+
+          <div class="control-divider" aria-hidden="true"></div>
+          <div class="control-actions">
+            <!-- MARKET CLOCK & SESSION WIDGET -->
+            <div class="control-clock-widget" id="marketClockWidget" title="Giờ thị trường và trạng thái phiên giao dịch TTCK Việt Nam">
+              <div class="control-clock-header">
+                <span class="control-clock-label"><i data-lucide="clock"></i> Giờ Thị Trường</span>
+                <div class="session-status" id="marketSessionBadge">
+                  <span class="session-dot"></span>
+                  <span id="marketSessionText">Kiểm tra phiên...</span>
+                </div>
+              </div>
+              <div class="control-clock-body">
+                <div class="live-clock-digits" id="liveClockText">--:--:--</div>
+                <div class="live-clock-sub" id="liveClockDateText">Thứ Ba, 13/10/2026</div>
+              </div>
+            </div>
+
+            <div class="action-wrap">
+              <button class="btn btn-primary btn-run" id="btnStartAnalysis">
+                <i data-lucide="play" class="btn-icon"></i>
+                <span>Bắt Đầu Phân Tích</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- PIPELINE VISUALIZER (LANGGRAPH NODE FLOW) -->
+    <section class="pipeline-section">
+      <div class="section-header">
+        <div class="title-with-icon">
+          <i data-lucide="git-merge"></i>
+          <h3>Tiến Trình Phân Tích Multi-Agent Thời Gian Thực</h3>
+        </div>
+        <div class="header-right-actions">
+          <div class="progress-meta" id="progressMeta">
+            <span class="time-elapsed" id="elapsedTimer">00:00</span>
+            <span class="current-step-label" id="currentStepLabel">Chờ khởi chạy...</span>
+          </div>
+          <button type="button" class="btn-toggle-pipeline" id="btnTogglePipeline" title="Thu gọn hoặc mở rộng tiến trình">
+            <i data-lucide="chevron-up" id="iconTogglePipeline"></i>
+            <span id="textTogglePipeline">Thu gọn</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- COMPACT SUMMARY BAR (WHEN COLLAPSED) -->
+      <div class="pipeline-summary-bar" id="pipelineSummaryBar" style="display: none;">
+        <div class="summary-steps">
+          <div class="summary-chip" id="sumStep1"><i data-lucide="check-circle-2"></i> <span>1. Phân Tích (4)</span></div>
+          <div class="summary-chip" id="sumStep2"><i data-lucide="check-circle-2"></i> <span>2. Tranh Luận (2)</span></div>
+          <div class="summary-chip" id="sumStep3"><i data-lucide="check-circle-2"></i> <span>3. Kế Hoạch (1)</span></div>
+          <div class="summary-chip" id="sumStep4"><i data-lucide="check-circle-2"></i> <span>4. Quyết Định (2)</span></div>
+        </div>
+        <div class="summary-total-tag" id="summaryTotalTag">10/10 Agents Xong</div>
+      </div>
+
+      <div class="pipeline-board" id="pipelineBoard">
+        <!-- Stage 1: Analysts -->
+        <div class="stage-col" data-stage="analysts">
+          <div class="stage-title">
+            <span class="stage-num">1</span> Đội Ngũ Phân Tích
+          </div>
+          <div class="node-grid">
+            <div class="agent-node" id="node-market" data-agent="market">
+              <div class="node-icon"><i data-lucide="line-chart"></i></div>
+              <div class="node-info">
+                <div class="node-name">Market Analyst</div>
+                <div class="node-desc">Kỹ thuật & MA / RSI</div>
+              </div>
+              <div class="node-badge">Chờ</div>
+            </div>
+
+            <div class="agent-node" id="node-fundamentals" data-agent="fundamentals">
+              <div class="node-icon"><i data-lucide="file-spreadsheet"></i></div>
+              <div class="node-info">
+                <div class="node-name">Fundamentals</div>
+                <div class="node-desc">BCTC & Định giá</div>
+              </div>
+              <div class="node-badge">Chờ</div>
+            </div>
+
+            <div class="agent-node" id="node-sentiment" data-agent="sentiment">
+              <div class="node-icon"><i data-lucide="message-square"></i></div>
+              <div class="node-info">
+                <div class="node-name">Sentiment</div>
+                <div class="node-desc">Tâm lý & Diễn đàn</div>
+              </div>
+              <div class="node-badge">Chờ</div>
+            </div>
+
+            <div class="agent-node" id="node-news" data-agent="news">
+              <div class="node-icon"><i data-lucide="newspaper"></i></div>
+              <div class="node-info">
+                <div class="node-name">News & Macro</div>
+                <div class="node-desc">Tin tức & Vĩ mô</div>
+              </div>
+              <div class="node-badge">Chờ</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="flow-connector"><i data-lucide="chevron-right"></i></div>
+
+        <!-- Stage 2: Research Debate -->
+        <div class="stage-col" data-stage="research">
+          <div class="stage-title">
+            <span class="stage-num">2</span> Sàn Đấu Tranh Luận
+          </div>
+          <div class="node-grid">
+            <div class="agent-node node-bull" id="node-bull" data-agent="bull">
+              <div class="node-icon"><i data-lucide="trending-up"></i></div>
+              <div class="node-info">
+                <div class="node-name">Bull Researcher</div>
+                <div class="node-desc">Phe Bò (Kỳ vọng tăng)</div>
+              </div>
+              <div class="node-badge">Chờ</div>
+            </div>
+
+            <div class="agent-node node-bear" id="node-bear" data-agent="bear">
+              <div class="node-icon"><i data-lucide="trending-down"></i></div>
+              <div class="node-info">
+                <div class="node-name">Bear Researcher</div>
+                <div class="node-desc">Phe Gấu (Rủi ro giảm)</div>
+              </div>
+              <div class="node-badge">Chờ</div>
+            </div>
+
+            <div class="agent-node node-judge" id="node-research-manager" data-agent="research_manager">
+              <div class="node-icon"><i data-lucide="scale"></i></div>
+              <div class="node-info">
+                <div class="node-name">Research Manager</div>
+                <div class="node-desc">Trọng tài Phán quyết</div>
+              </div>
+              <div class="node-badge">Chờ</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="flow-connector"><i data-lucide="chevron-right"></i></div>
+
+        <!-- Stage 3: Trading Strategy -->
+        <div class="stage-col" data-stage="trading">
+          <div class="stage-title">
+            <span class="stage-num">3</span> Chiến Lược Gia
+          </div>
+          <div class="node-grid">
+            <div class="agent-node" id="node-trader" data-agent="trader">
+              <div class="node-icon"><i data-lucide="crosshair"></i></div>
+              <div class="node-info">
+                <div class="node-name">Trader</div>
+                <div class="node-desc">Entry, Sizing & Stop</div>
+              </div>
+              <div class="node-badge">Chờ</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="flow-connector"><i data-lucide="chevron-right"></i></div>
+
+        <!-- Stage 4: Risk & Decision -->
+        <div class="stage-col" data-stage="portfolio">
+          <div class="stage-title">
+            <span class="stage-num">4</span> Hội Đồng Rủi Ro & Quyết Định
+          </div>
+          <div class="node-grid">
+            <div class="agent-node" id="node-risk-council" data-agent="risk_council">
+              <div class="node-icon"><i data-lucide="shield-alert"></i></div>
+              <div class="node-info">
+                <div class="node-name">Risk Council</div>
+                <div class="node-desc">Aggressive / Conservative</div>
+              </div>
+              <div class="node-badge">Chờ</div>
+            </div>
+
+            <div class="agent-node node-boss" id="node-portfolio-manager" data-agent="portfolio_manager">
+              <div class="node-icon"><i data-lucide="crown"></i></div>
+              <div class="node-info">
+                <div class="node-name">Portfolio Manager</div>
+                <div class="node-desc">Quyết Định Tối Hậu</div>
+              </div>
+              <div class="node-badge">Chờ</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- WORKSPACE TABS & CONTENT -->
+    <main class="workspace-section">
+      <div class="tabs-nav">
+        <button class="tab-btn active" data-tab="summary">
+          <i data-lucide="layout-dashboard"></i>
+          <span>Tổng Quan & Khuyến Nghị</span>
+        </button>
+        <button class="tab-btn" data-tab="debate">
+          <i data-lucide="swords"></i>
+          <span>Sàn Đấu Tranh Luận (Debate Arena)</span>
+        </button>
+        <button class="tab-btn" data-tab="reports">
+          <i data-lucide="book-open"></i>
+          <span>Báo Cáo Chuyên Sâu</span>
+        </button>
+        <button class="tab-btn" data-tab="terminal">
+          <i data-lucide="terminal"></i>
+          <span>Live Console & Tools <span class="badge-dot pulse"></span></span>
+        </button>
+      </div>
+
+      <!-- TAB 1: EXECUTIVE SUMMARY & CHARTS -->
+      <div class="tab-content active" id="tab-summary">
+        <!-- Decision Banner -->
+        <div class="decision-banner" id="decisionBanner">
+          <div class="decision-left">
+            <div class="signal-badge hold" id="signalBadge">
+              <span class="signal-tag">TÍN HIỆU ĐẦU TƯ</span>
+              <span class="signal-val" id="signalVal">CHỜ PHÂN TÍCH</span>
+            </div>
+            <div class="ticker-spotlight">
+              <h2 id="spotlightTicker">BSR</h2>
+              <p id="spotlightCompany">--</p>
+              <div class="market-meta-tags">
+                <span class="meta-tag"><i data-lucide="clock"></i> Chu kỳ T+2.5</span>
+                <span class="meta-tag"><i data-lucide="shield-check"></i> Không bán khống</span>
+                <span class="meta-tag" id="spotlightExchange"><i data-lucide="building"></i> HOSE (±7%)</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="decision-metrics">
+            <div class="metric-box">
+              <span class="metric-label">Giá Đóng Cửa</span>
+              <span class="metric-value highlight" id="metricClosePrice">--</span>
+              <span class="metric-sub" id="metricCloseDateSub">VND</span>
+            </div>
+            <div class="metric-box" id="metricEntryBox">
+              <span class="metric-label" id="metricEntryLabel">Giá Vào Lệnh (Entry)</span>
+              <span class="metric-value" id="metricEntry">--</span>
+              <span class="metric-sub" id="metricEntrySub">Khuyến nghị mua</span>
+            </div>
+            <div class="metric-box">
+              <span class="metric-label">Cắt Lỗ (Stop Loss)</span>
+              <span class="metric-value danger" id="metricStopLoss">--</span>
+              <span class="metric-sub" id="metricStopLossSub">Kỷ luật</span>
+            </div>
+            <div class="metric-box">
+              <span class="metric-label">Tỷ Trọng Khuyến Nghị</span>
+              <span class="metric-value info" id="metricSizing">--</span>
+              <span class="metric-sub">Phân bổ vốn</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Chart & Quick Summary Grid -->
+        <div class="dashboard-grid">
+          <!-- Left: TradingView Candlestick Chart -->
+          <div class="card chart-card">
+            <div class="card-header">
+              <div class="card-title">
+                <i data-lucide="candlestick-chart"></i>
+                <span>Biểu Đồ Kỹ Thuật & Khối Lượng</span>
+              </div>
+              <div class="chart-controls">
+                <div class="timeframe-buttons" id="timeframeButtons">
+                  <button class="btn-tf active" data-tf="1D">Ngày (1D)</button>
+                  <button class="btn-tf" data-tf="1W">Tuần (1W)</button>
+                  <button class="btn-tf" data-tf="1M">Tháng (1M)</button>
+                </div>
+                <span class="chart-legend"><span class="legend-box up"></span> Tăng</span>
+                <span class="chart-legend"><span class="legend-box down"></span> Giảm</span>
+                <span class="chart-legend"><span class="legend-line sma50"></span> SMA 50</span>
+                <span class="chart-legend"><span class="legend-line stoploss"></span> Cắt Lỗ</span>
+              </div>
+            </div>
+            <div class="chart-container" id="candlestickChart">
+              <div class="chart-placeholder" id="chartPlaceholder">
+                <i data-lucide="bar-chart-2"></i>
+                <p>Đang tải dữ liệu biểu đồ...</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Right: Key Highlights & Reasoning -->
+          <div class="card reasoning-card">
+            <div class="card-header">
+              <div class="card-title">
+                <i data-lucide="brain"></i>
+                <span>Luận Điểm Quyết Định Của Portfolio Manager</span>
+              </div>
+            </div>
+
+            <!-- PM Key Metrics Pills Bar (Rating, Target, Horizon) -->
+            <div class="pm-pills-bar" id="pmPillsBar" style="display: none;">
+              <div class="pm-pill pm-pill-rating" id="pillRating">
+                <span class="pm-pill-label">RATING</span>
+                <span class="pm-pill-val" id="pillRatingVal">--</span>
+              </div>
+              <div class="pm-pill pm-pill-target" id="pillTarget">
+                <span class="pm-pill-label">MỤC TIÊU</span>
+                <span class="pm-pill-val" id="pillTargetVal">--</span>
+              </div>
+              <div class="pm-pill pm-pill-horizon" id="pillHorizon">
+                <span class="pm-pill-label">THỜI HẠN</span>
+                <span class="pm-pill-val" id="pillHorizonVal">--</span>
+              </div>
+            </div>
+
+            <div class="card-body markdown-body" id="reasoningContent">
+              <div class="empty-state">
+                <i data-lucide="file-question"></i>
+                <p>Chưa có dữ liệu phân tích. Hãy nhấn <b>"Bắt Đầu Phân Tích"</b> hoặc chọn từ <b>"Lịch sử Báo Cáo"</b> để xem.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TAB 2: DEBATE ARENA -->
+      <div class="tab-content" id="tab-debate">
+        <div class="debate-layout">
+          <!-- Top: Bull vs Bear -->
+          <div class="debate-row">
+            <!-- Bull Researcher Column -->
+            <div class="card debate-card bull-card">
+              <div class="card-header debate-header bull">
+                <div class="card-title">
+                  <i data-lucide="trending-up"></i>
+                  <span>Luận Điểm Phe Bò (Bull Researcher)</span>
+                </div>
+                <span class="stance-badge bull">KỲ VỌNG TĂNG GIÁ</span>
+              </div>
+              <div class="card-body markdown-body" id="bullDebateContent">
+                <div class="empty-state">Chưa có nội dung tranh luận của Phe Bò</div>
+              </div>
+            </div>
+
+            <!-- Bear Researcher Column -->
+            <div class="card debate-card bear-card">
+              <div class="card-header debate-header bear">
+                <div class="card-title">
+                  <i data-lucide="trending-down"></i>
+                  <span>Luận Điểm Phe Gấu (Bear Researcher)</span>
+                </div>
+                <span class="stance-badge bear">CẢNH BÁO RỦI RO</span>
+              </div>
+              <div class="card-body markdown-body" id="bearDebateContent">
+                <div class="empty-state">Chưa có nội dung tranh luận của Phe Gấu</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Judge Decision -->
+          <div class="card judge-card">
+            <div class="card-header">
+              <div class="card-title">
+                <i data-lucide="scale"></i>
+                <span>Phán Quyết Của Trọng Tài (Research Manager)</span>
+              </div>
+            </div>
+            <div class="card-body markdown-body" id="judgeDebateContent">
+              <div class="empty-state">Chờ kết luận của Research Manager sau vòng đối đầu...</div>
+            </div>
+          </div>
+
+          <!-- Risk Team Council (Aggressive vs Conservative vs Neutral) -->
+          <div class="card risk-card">
+            <div class="card-header">
+              <div class="card-title">
+                <i data-lucide="shield"></i>
+                <span>Tranh Luận Hội Đồng Quản Trị Rủi Ro</span>
+              </div>
+            </div>
+            <div class="card-body markdown-body" id="riskCouncilContent">
+              <div class="empty-state">Chưa có dữ liệu tranh luận rủi ro...</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TAB 3: DETAILED REPORTS -->
+      <div class="tab-content" id="tab-reports">
+        <div class="reports-layout">
+          <div class="reports-sidebar">
+            <button class="report-nav-btn active" data-report="market">
+              <i data-lucide="line-chart"></i> Phân Tích Kỹ Thuật
+            </button>
+            <button class="report-nav-btn" data-report="fundamentals">
+              <i data-lucide="file-spreadsheet"></i> Phân Tích Cơ Bản (BCTC)
+            </button>
+            <button class="report-nav-btn" data-report="sentiment">
+              <i data-lucide="message-square"></i> Tâm Lý Thị Trường
+            </button>
+            <button class="report-nav-btn" data-report="news">
+              <i data-lucide="newspaper"></i> Tin Tức & Vĩ Mô
+            </button>
+            <button class="report-nav-btn" data-report="trader">
+              <i data-lucide="crosshair"></i> Kế Hoạch Của Trader
+            </button>
+          </div>
+
+          <div class="reports-viewer card">
+            <div class="card-header">
+              <div class="card-title" id="currentReportTitle">
+                <i data-lucide="file-text"></i> Báo Cáo Phân Tích Kỹ Thuật
+              </div>
+              <button class="btn btn-secondary btn-sm" id="btnCopyReport">
+                <i data-lucide="copy"></i> Sao chép Markdown
+              </button>
+            </div>
+            <div class="card-body markdown-body" id="reportViewerContent">
+              <div class="empty-state">Chưa có nội dung báo cáo.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- TAB 4: LIVE AGENT CONSOLE & TOOL CALLS -->
+      <div class="tab-content" id="tab-terminal">
+        <div class="terminal-layout">
+          <div class="card terminal-card">
+            <div class="card-header terminal-header">
+              <div class="card-title">
+                <i data-lucide="terminal"></i>
+                <span>Live Agent Execution Stream</span>
+              </div>
+              <div class="terminal-actions">
+                <button class="btn btn-secondary btn-sm" id="btnClearTerminal">
+                  <i data-lucide="trash-2"></i> Xóa log
+                </button>
+                <label class="auto-scroll-toggle">
+                  <input type="checkbox" id="chkAutoScroll" checked> Tự động cuộn
+                </label>
+              </div>
+            </div>
+            <div class="terminal-logs" id="terminalLogs">
+              <div class="terminal-line system">
+                <span class="log-time">[00:00:00]</span>
+                <span class="log-tag system">HỆ THỐNG</span>
+                <span class="log-text">TradingAgentsVN Web Interface đã sẵn sàng kết nối.</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="card tools-card">
+            <div class="card-header">
+              <div class="card-title">
+                <i data-lucide="wrench"></i>
+                <span>Công Cụ Đã Thực Thi (Tool Calls)</span>
+              </div>
+            </div>
+            <div class="tools-list" id="toolsList">
+              <div class="empty-tools">Chưa có công cụ nào được gọi.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- HISTORY MODAL -->
+    <div class="modal-backdrop" id="historyModal">
+      <div class="modal-box">
+        <div class="modal-header">
+          <div class="modal-title">
+            <i data-lucide="history"></i>
+            <span>Lịch Sử Phân Tích Đã Lưu</span>
+          </div>
+          <button class="btn-close" id="btnCloseHistory">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="history-list" id="historyList">
+            <div class="loading-state">Đang tải lịch sử báo cáo...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- AI CONFIG MODAL -->
+    <div class="modal-backdrop" id="configModal">
+      <div class="modal-box modal-wide">
+        <div class="modal-header">
+          <div class="modal-title">
+            <i data-lucide="sliders"></i>
+            <span>Cấu Hình Nhà Cung Cấp AI & API Key</span>
+          </div>
+          <button class="btn-close" id="btnCloseConfig">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="config-form">
+            <div class="form-group">
+              <label for="cfgProvider"><i data-lucide="bot"></i> Nhà Cung Cấp AI (LLM Provider)</label>
+              <select id="cfgProvider" class="form-select">
+                <option value="openai_compatible">OpenAI Compatible / 9Router / Relay Proxy</option>
+                <option value="google">Google Gemini (Gemini 2.5 Pro / Flash)</option>
+                <option value="openai">OpenAI Official (GPT-4o, GPT-5...)</option>
+                <option value="anthropic">Anthropic Claude (Claude 3.5 / 3.7)</option>
+                <option value="deepseek">DeepSeek API (DeepSeek V3, R1)</option>
+                <option value="openrouter">OpenRouter (All-in-one)</option>
+                <option value="groq">Groq Cloud (LPU High-Speed)</option>
+                <option value="ollama">Ollama (Chạy mô hình cục bộ Local)</option>
+              </select>
+            </div>
+
+            <div class="form-group">
+              <label for="cfgApiKey">
+                <i data-lucide="key"></i> API Key
+                <span class="label-hint" id="cfgKeyEnvHint">(OPENAI_COMPATIBLE_API_KEY)</span>
+              </label>
+              <div class="input-with-action">
+                <input type="password" id="cfgApiKey" placeholder="Nhập API Key mới hoặc giữ nguyên..." autocomplete="off">
+                <button type="button" class="btn-icon-action" id="btnToggleKeyVis" title="Ẩn/Hiện API Key">
+                  <i data-lucide="eye" id="iconKeyEye"></i>
+                </button>
+              </div>
+              <div class="field-status" id="cfgKeyStatus">Đang dùng: <code>--</code></div>
+            </div>
+
+            <div class="form-group" id="groupBackendUrl">
+              <label for="cfgBackendUrl">
+                <i data-lucide="link"></i> Backend Base URL (Tùy chọn / Proxy / Relay)
+              </label>
+              <input type="text" id="cfgBackendUrl" placeholder="VD: http://100.114.80.56:20128/v1 hoặc https://api.openai.com/v1">
+            </div>
+
+            <div class="form-row">
+              <div class="form-group flex-1">
+                <label for="cfgDeepModel"><i data-lucide="brain"></i> Deep Think Model (Phân tích sâu)</label>
+                <input type="text" id="cfgDeepModel" placeholder="VD: Kiro, gemini-2.5-pro, gpt-4o...">
+              </div>
+
+              <div class="form-group flex-1">
+                <label for="cfgQuickModel"><i data-lucide="zap"></i> Quick Think Model (Phân tích nhanh)</label>
+                <input type="text" id="cfgQuickModel" placeholder="VD: Kiro, gemini-2.5-flash, gpt-4o-mini...">
+              </div>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group flex-1">
+                <label for="cfgTimeout">
+                  <i data-lucide="clock"></i> Thời Gian Chờ (Timeout - giây)
+                  <span class="label-hint">(Tối ưu 9Router)</span>
+                </label>
+                <input type="number" id="cfgTimeout" min="10" max="300" step="5" placeholder="60">
+              </div>
+
+              <div class="form-group flex-1">
+                <label for="cfgMaxRetries">
+                  <i data-lucide="rotate-cw"></i> Số Lần Xoay Nhà Cung Cấp (Retries)
+                  <span class="label-hint">(Tối đa gọi lại)</span>
+                </label>
+                <input type="number" id="cfgMaxRetries" min="0" max="10" step="1" placeholder="4">
+              </div>
+            </div>
+            <div class="field-hint-box" style="margin-bottom: 16px; font-size: 12px; color: var(--text-muted); background: rgba(255,255,255,0.03); padding: 8px 12px; border-radius: 6px; border: 1px dashed rgba(255,255,255,0.1);">
+              <i data-lucide="info" style="width: 14px; height: 14px; vertical-align: middle; margin-right: 4px;"></i>
+              <b>Cơ chế 9Router Failover:</b> Khi 1 nhà cung cấp phản hồi quá thời gian Timeout, hệ thống sẽ tự động gọi lại để 9Router xoay vòng sang nhà cung cấp upstream khác.
+            </div>
+
+            <div class="form-actions">
+              <button class="btn btn-secondary" id="btnCancelConfig">Hủy</button>
+              <button class="btn btn-primary" id="btnSaveConfig">
+                <i data-lucide="save"></i>
+                <span>Lưu Cấu Hình (.env)</span>
+              </button>
+            </div>
+            <div class="config-toast" id="configToast"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- GIT UPSTREAM MODAL -->
+    <div class="modal-backdrop" id="gitModal">
+      <div class="modal-box modal-wide">
+        <div class="modal-header">
+          <div class="modal-title">
+            <i data-lucide="git-pull-request"></i>
+            <span>Đồng Bộ & Cập Nhật Upstream (TauricResearch/TradingAgents)</span>
+          </div>
+          <button class="btn-close" id="btnCloseGit">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="git-status-card">
+            <div class="git-info-row">
+              <div class="info-pill"><i data-lucide="git-branch"></i> Nhánh: <b id="gitBranch">feat/vietnam-market</b></div>
+              <div class="info-pill"><i data-lucide="globe"></i> Nguồn Upstream: <b>TauricResearch/TradingAgents</b></div>
+              <div class="info-pill" id="gitStatusBadge"><span class="badge-dot"></span> Đang kiểm tra...</div>
+            </div>
+
+            <div class="git-notice">
+              <i data-lucide="shield-check"></i>
+              <span><b>An toàn tuyệt đối:</b> Hệ thống sử dụng kiến trúc phân tầng độc lập. Việc pull code từ upstream sẽ chỉ cập nhật các module AI agent gốc, không bao giờ ghi đè lên giao diện Web hay các dữ liệu phân tích của bạn!</span>
+            </div>
+
+            <div class="git-commits-section">
+              <div class="section-subtitle">
+                <i data-lucide="list"></i> Các Commit Mới Nhất Từ Upstream/Main:
+              </div>
+              <div class="git-commits-list" id="gitCommitsList">
+                <div class="loading-state">Đang tải danh sách commit mới...</div>
+              </div>
+            </div>
+
+            <div class="git-terminal" id="gitTerminalLogs">
+              <div class="term-line">$ git fetch upstream</div>
+              <div class="term-line text-muted">Sẵn sàng thực hiện đồng bộ.</div>
+            </div>
+
+            <div class="form-actions space-between">
+              <button class="btn btn-secondary" id="btnGitCheck">
+                <i data-lucide="refresh-cw"></i>
+                <span>Kiểm Tra Lại</span>
+              </button>
+              <button class="btn btn-primary" id="btnGitPull">
+                <i data-lucide="download-cloud"></i>
+                <span>Chuẩn Bị Bản Cập Nhật</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- App Script with Cache Buster -->
+  <script src="/static/app.js?v=2.5"></script>
+</body>
+</html>
