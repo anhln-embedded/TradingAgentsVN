@@ -1,6 +1,6 @@
 name: tradingagents-vn
 services:
-  dashboard:
+  dashboard: &app-service
     image: tradingagents-vn:${APP_VERSION:-local}
     build:
       context: ..
@@ -8,12 +8,16 @@ services:
       args:
         APP_REVISION: ${APP_VERSION:-local}
     env_file: .env
-    environment:
+    environment: &app-env
       TA_ENV: production
       TA_DATA_DIR: /data
       TA_RUNTIME_ENV_FILE: /data/config/runtime.env
       TA_ALLOW_GIT_UPDATES: "false"
+      TA_DATABASE_URL: postgresql+psycopg://tradingagents:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@database:5432/tradingagents
       TZ: Asia/Ho_Chi_Minh
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
     ports:
       - "127.0.0.1:${APP_PORT:-8000}:8000"
     volumes:
@@ -38,5 +42,37 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+  worker:
+    <<: *app-service
+    ports: []
+    command: [python, -m, vnapp.worker]
+    healthcheck:
+      disable: true
+    stop_grace_period: 45s
+  migrate:
+    <<: *app-service
+    ports: []
+    command: [python, -m, vnapp.migrate]
+    restart: "no"
+    depends_on:
+      database:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+  database:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: tradingagents
+      POSTGRES_USER: tradingagents
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U tradingagents -d tradingagents"]
+      interval: 5s
+      timeout: 5s
+      retries: 15
 volumes:
   app_data:
+  postgres_data:

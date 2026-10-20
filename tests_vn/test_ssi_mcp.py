@@ -50,7 +50,10 @@ def test_ssi_is_primary_and_success_is_cached(monkeypatch):
 
 def test_vietcap_then_dnse_are_fallbacks(monkeypatch):
     vn_stock._OHLCV_CACHE.clear()
-    expected = pd.DataFrame({"Date": [pd.Timestamp("2026-10-19")], "Close": [102.0]})
+    expected = pd.DataFrame({
+        "Date": [pd.Timestamp("2026-10-19")], "Open": [100.0], "High": [103.0],
+        "Low": [99.0], "Close": [102.0], "Volume": [1000],
+    })
     calls = []
 
     def fail(name):
@@ -62,3 +65,24 @@ def test_vietcap_then_dnse_are_fallbacks(monkeypatch):
     monkeypatch.setattr(vn_stock, "_fetch_dnse_ohlcv", lambda *args: calls.append("dnse") or expected)
     assert vn_stock.fetch_vn_ohlcv("FPT", 30).equals(expected)
     assert calls == ["ssi", "vietcap", "dnse"]
+
+
+def test_cached_fallback_does_not_mask_ssi_after_oauth(monkeypatch):
+    from tradingagents.dataflows.ssi_oauth import ssi_oauth
+
+    vn_stock._OHLCV_CACHE.clear()
+    fallback = pd.DataFrame({
+        "Date": [pd.Timestamp("2026-10-19")], "Open": [100.0], "High": [103.0],
+        "Low": [99.0], "Close": [101.0], "Volume": [1000],
+    })
+    primary = fallback.copy()
+    primary["Close"] = 102.0
+    connected = {"value": False}
+    monkeypatch.setattr(ssi_oauth, "status", lambda: {
+        "connected": connected["value"], "debug_token": False, "expires_at": None,
+    })
+    monkeypatch.setattr(vn_stock, "fetch_ssi_ohlcv", lambda *args: primary if connected["value"] else (_ for _ in ()).throw(RuntimeError("offline")))
+    monkeypatch.setattr(vn_stock, "_fetch_vietcap_ohlcv", lambda *args: fallback)
+    assert vn_stock.fetch_vn_ohlcv("FPT", 30).iloc[-1]["Close"] == 101.0
+    connected["value"] = True
+    assert vn_stock.fetch_vn_ohlcv("FPT", 30).iloc[-1]["Close"] == 102.0

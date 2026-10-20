@@ -1,5 +1,4 @@
 import asyncio
-import base64
 import json
 import os
 from pathlib import Path
@@ -73,6 +72,36 @@ class StorageTests(unittest.TestCase):
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_reconnect_replays_events_without_starting_second_worker(self):
+        started, finish = threading.Event(), threading.Event()
+
+        def worker(ticker, date, events, analysts):
+            events.put({"event": "init", "data": {}})
+            started.set()
+            finish.wait(5)
+            events.put({"event": "complete", "data": {}})
+            events.put(None)
+
+        async def exercise():
+            with patch("web.api.stream.run_graph_sync", side_effect=worker) as run:
+                events = stream_analysis_events("MBB", "2026-10-14", run_id="reconnect-test")
+                try:
+                    self.assertTrue(started.wait(2))
+                    first = await anext(events)
+                    await events.aclose()
+                    resumed = stream_analysis_events("MBB", "2026-10-14", run_id="reconnect-test", last_event_id=int(first["id"]))
+                    finish.set()
+                    remaining = [item async for item in resumed]
+                    self.assertEqual([item["event"] for item in remaining], ["complete"])
+                    run.assert_called_once()
+                finally:
+                    finish.set()
+                    acquired = await asyncio.to_thread(RUN_LOCK.acquire, True, 3)
+                    self.assertTrue(acquired)
+                    if acquired:
+                        RUN_LOCK.release()
+        asyncio.run(exercise())
+
     def test_buffer_is_bounded_and_disconnect_does_not_block_producer(self):
         buffer = EventBuffer()
         for item in range(1000):
@@ -124,22 +153,29 @@ class RuntimeTests(unittest.TestCase):
 
 
 class ServerTests(unittest.TestCase):
-    def test_production_requires_password(self):
-        with patch.dict(os.environ, {"TA_ENV": "production", "TA_WEB_PASSWORD": ""}):
+    def test_production_requires_database(self):
+        from vnapp.database import make_engine
+        with patch.dict(os.environ, {"TA_ENV": "production", "TA_DATABASE_URL": ""}):
             with self.assertRaises(RuntimeError):
-                create_app()
+                make_engine()
 
     def test_auth_health_and_disabled_git(self):
         from fastapi.testclient import TestClient
-        with patch.dict(os.environ, {"TA_ENV": "production", "TA_WEB_PASSWORD": "test-only", "TA_WEB_USERNAME": "admin", "TA_ALLOW_GIT_UPDATES": "false"}):
-            with TestClient(create_app()) as client:
-                self.assertEqual(client.get("/api/health").status_code, 200)
-                self.assertEqual(client.get("/").status_code, 401)
-                headers = {"Authorization": "Basic " + base64.b64encode(b"admin:test-only").decode()}
-                self.assertEqual(client.get("/", headers=headers).status_code, 200)
-                self.assertTrue(client.get("/api/git/status", headers=headers).json()["disabled"])
-                self.assertEqual(client.post("/api/git/pull", headers=headers).status_code, 403)
-                self.assertEqual(client.get("/api/config", headers={**headers, "Origin": "https://other.example"}).status_code, 403)
+        from vnapp.database import make_engine
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"TA_ENV": "test", "TA_PUBLIC_ORIGIN": "", "TA_BOOTSTRAP_ADMIN_EMAIL": "superadmin", "TA_BOOTSTRAP_ADMIN_PASSWORD": "test-password-123", "TA_ALLOW_GIT_UPDATES": "false"}):
+            engine = make_engine("sqlite:///" + (Path(directory)/"test.sqlite").as_posix())
+            try:
+                with TestClient(create_app(engine)) as client:
+                    self.assertEqual(client.get("/api/health").status_code, 200)
+                    self.assertEqual(client.get("/", follow_redirects=False).status_code, 303)
+                    login = client.post("/api/auth/login", headers={"X-Requested-With": "TradingAgentsVN"}, json={"email": "superadmin", "password": "test-password-123"})
+                    headers = {"X-CSRF-Token": login.json()["csrf"]}
+                    self.assertEqual(client.get("/").status_code, 200)
+                    self.assertTrue(client.get("/api/git/status").json()["disabled"])
+                    self.assertEqual(client.post("/api/git/pull", headers=headers).status_code, 403)
+                    self.assertEqual(client.get("/api/config", headers={"Origin": "https://other.example"}).status_code, 403)
+            finally:
+                engine.dispose()
 
 
 class UpdateTests(unittest.TestCase):

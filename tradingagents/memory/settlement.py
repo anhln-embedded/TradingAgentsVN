@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from tradingagents.dataflows.symbols import normalize_symbol
 from tradingagents.dataflows.vendors.yahoo.market import get_closes
 from tradingagents.dataflows.vn_stock import is_vn_stock
+from tradingagents.dataflows.vn_stock import fetch_vn_ohlcv
 
 logger = logging.getLogger(__name__)
 
@@ -77,11 +78,22 @@ def fetch_returns(
 
     # Closes for the instrument the analysis priced (XAUUSD -> GC=F, #984),
     # from the first session after the decision date.
-    stock = _by_day(get_closes(ticker, trade_date, end_str))
+    def closes_for(symbol: str, from_date: str):
+        if is_vn_stock(symbol) or symbol.upper() in {"^VNINDEX", "VNINDEX"}:
+            vn_symbol = "VNINDEX" if symbol.upper() == "^VNINDEX" else symbol
+            span = max((end - datetime.strptime(from_date, "%Y-%m-%d")).days + 30, 60)
+            frame = fetch_vn_ohlcv(vn_symbol, count_back=span, end_date=end_str)
+            dates = frame["Date"]
+            closes = frame["Close"].copy()
+            closes.index = dates
+            return closes.loc[closes.index >= datetime.strptime(from_date, "%Y-%m-%d")]
+        return get_closes(symbol, from_date, end_str)
+
+    stock = _by_day(closes_for(ticker, trade_date))
     stock = stock[stock.index > start]
     # From a week earlier, so the benchmark has a close on or before entry.
     bench_start = (start - timedelta(days=7)).strftime("%Y-%m-%d")
-    bench = _by_day(get_closes(benchmark, bench_start, end_str))
+    bench = _by_day(closes_for(benchmark, bench_start))
 
     # Require the full holding window to have traded. A rerun before it has
     # leaves the entry pending to retry next run, rather than settling on a

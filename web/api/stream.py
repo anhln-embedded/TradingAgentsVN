@@ -73,6 +73,7 @@ def run_graph_sync(
     try:
         # Register retry log capture for 9Router failover observability
         openai_logger = logging.getLogger("openai._base_client")
+        openai_logger.setLevel(logging.INFO)
         retry_log_handler = OpenAIRetryLogHandler(event_queue)
         openai_logger.addHandler(retry_log_handler)
 
@@ -340,6 +341,7 @@ def run_graph_sync(
                 "trade_date": trade_date,
                 "signal": decision,
                 "final_trade_decision": trade_decision,
+                "trader_investment_plan": final_state.get("trader_investment_plan", ""),
                 "report_path": report_path,
                 "finished_at": datetime.now().isoformat(),
             },
@@ -387,20 +389,61 @@ def run_graph_sync(
         event_queue.put(None)  # Sentinel for completion
 
 
+_sessions = {}
+_sessions_lock = threading.Lock()
+
+
+class ReplayBuffer:
+    """Keep a bounded event log independent of any browser connection."""
+    def __init__(self):
+        from collections import deque
+        self.items = deque(maxlen=2048)
+        self.sequence = 0
+        self.done = False
+        self.lock = threading.Lock()
+
+    def put(self, item):
+        with self.lock:
+            if item is None:
+                self.done = True
+            else:
+                self.sequence += 1
+                self.items.append({**item, "id": str(self.sequence)})
+
+
 def stream_analysis_events(
     ticker: str,
     trade_date: str,
     selected_analysts=("market", "social", "news", "fundamentals"),
+    run_id=None,
+    last_event_id=0,
+    resume=False,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """Start a run independently of SSE lifetime; save even after disconnect."""
+    with _sessions_lock:
+        existing = _sessions.get(run_id) if run_id else None
+    if existing:
+        params, event_queue = existing
+        if params != (ticker, trade_date, tuple(selected_analysts)):
+            raise RuntimeError("Phiên phân tích không khớp với yêu cầu.")
+        return _replay_events(event_queue, last_event_id)
+    if resume:
+        raise RuntimeError("Phiên phân tích không còn tồn tại. Server có thể đã khởi động lại; vui lòng chạy lại phân tích.")
     if not RUN_LOCK.acquire(blocking=False):
         raise RuntimeError("Một phiên phân tích đang chạy. Vui lòng chờ hoàn tất.")
-    event_queue = EventBuffer()
+    event_queue = ReplayBuffer() if run_id else EventBuffer()
+    if run_id:
+        with _sessions_lock:
+            # Retain only the latest run; never discard an active worker.
+            _sessions.clear()
+            _sessions[run_id] = ((ticker, trade_date, tuple(selected_analysts)), event_queue)
 
     def run():
         try:
             run_graph_sync(ticker, trade_date, event_queue, selected_analysts)
         finally:
+            if run_id:
+                event_queue.put(None)
             RUN_LOCK.release()
 
     worker = threading.Thread(target=run, daemon=True)
@@ -425,4 +468,17 @@ def stream_analysis_events(
         finally:
             event_queue.detached.set()
 
-    return events()
+    return _replay_events(event_queue, last_event_id) if run_id else events()
+
+
+async def _replay_events(buffer, cursor):
+    while True:
+        with buffer.lock:
+            batch = [item for item in buffer.items if int(item["id"]) > cursor]
+            done = buffer.done
+        for item in batch:
+            cursor = int(item["id"])
+            yield item
+        if done:
+            return
+        await asyncio.sleep(0.25)

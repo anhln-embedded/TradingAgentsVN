@@ -21,18 +21,18 @@ from requests.adapters import HTTPAdapter
 from stockstats import wrap
 from urllib3.util.retry import Retry
 
+from tradingagents.markets.vietnam.registry import (
+    get_vn_instrument,
+    is_known_vn_symbol,
+    normalize_vn_symbol,
+    register_instruments,
+)
+from tradingagents.markets.vietnam.rules import LIMIT_PCT
+
 from .errors import NoMarketDataError
 from .ssi_mcp import fetch_ssi_ohlcv
 
 logger = logging.getLogger(__name__)
-
-# Common non-VN 3-letter symbols (major US ETFs, commodities, crypto)
-_COMMON_US_3_LETTER = frozenset({
-    "SPY", "QQQ", "DIA", "IWM", "GLD", "SLV", "XLE", "XLF", "XLK", "XLV",
-    "XLI", "XLY", "XLP", "XLU", "XLB", "USO", "UNG", "TLT", "EEM", "VXX",
-    "BTC", "ETH", "SOL", "XRP", "DOG", "LTC", "BNB", "ADA", "DOT", "AVX",
-    "COF",
-})
 
 _VN_EXCHANGE_PRICE_LIMITS = {
     "VNINDEX": {"exchange": "HOSE", "limit_pct": 7.0, "desc": "HOSE (Biên độ ±7%)"},
@@ -145,23 +145,41 @@ def _ensure_session_cookies():
 
 
 def is_vn_stock(symbol: str) -> bool:
-    """Return True if symbol corresponds to a Vietnamese stock."""
+    """Return True only for an explicit ``.VN`` symbol or a registry member."""
     if not isinstance(symbol, str) or not symbol.strip():
         return False
     s = symbol.strip().upper()
-    if s.endswith(".VN"):
-        return True
-    if len(s) == 3 and s.isalpha() and s not in _COMMON_US_3_LETTER:
-        return True
-    return False
+    return s.endswith(".VN") or is_known_vn_symbol(s)
 
 
 def clean_vn_symbol(symbol: str) -> str:
     """Normalize symbol to bare 3-letter ticker for Vietnam market (e.g. VNM.VN -> VNM)."""
-    s = symbol.strip().upper()
-    if s.endswith(".VN"):
-        return s[:-3]
-    return s
+    return normalize_vn_symbol(symbol)
+
+
+def _normalize_ohlcv(df: pd.DataFrame, symbol: str, source: str) -> pd.DataFrame:
+    """Validate the common OHLCV contract and attach non-column metadata."""
+    required = {"Date", "Open", "High", "Low", "Close", "Volume"}
+    missing = required.difference(df.columns)
+    if missing:
+        raise ValueError(f"{source} thiếu cột OHLCV: {', '.join(sorted(missing))}")
+    frame = df[["Date", "Open", "High", "Low", "Close", "Volume"]].copy()
+    frame["Date"] = pd.to_datetime(frame["Date"], errors="coerce").dt.normalize()
+    for column in ("Open", "High", "Low", "Close", "Volume"):
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    frame = frame.dropna(subset=["Date", "Open", "High", "Low", "Close"])
+    valid = (
+        (frame[["Open", "High", "Low", "Close"]] > 0).all(axis=1)
+        & (frame["Low"] <= frame[["Open", "Close"]].min(axis=1))
+        & (frame["High"] >= frame[["Open", "Close"]].max(axis=1))
+        & (frame["Low"] <= frame["High"])
+    )
+    frame = frame.loc[valid].drop_duplicates("Date", keep="last").sort_values("Date")
+    if frame.empty:
+        raise ValueError(f"{source} không trả về nến OHLCV hợp lệ cho {symbol}")
+    frame["Volume"] = frame["Volume"].fillna(0).clip(lower=0).astype("int64")
+    frame.attrs.update({"source": source.lower(), "symbol": symbol, "currency": "VND"})
+    return frame.reset_index(drop=True)
 
 
 def _fetch_vietcap_ohlcv(clean_sym: str, count_back: int, end_date: Optional[str]) -> pd.DataFrame:
@@ -243,7 +261,13 @@ def _fetch_dnse_ohlcv(clean_sym: str, count_back: int, end_date: Optional[str]) 
 def fetch_vn_ohlcv(symbol: str, count_back: int = 350, end_date: Optional[str] = None) -> pd.DataFrame:
     """Fetch VN OHLCV from SSI MCP, with Vietcap and DNSE fallbacks."""
     clean_sym = clean_vn_symbol(symbol)
-    cache_key = f"{clean_sym}:{count_back}:{end_date}"
+    # Do not let a cached public fallback mask SSI immediately after OAuth connects.
+    try:
+        from .ssi_oauth import ssi_oauth
+        oauth_partition = int(ssi_oauth.status()["connected"] or ssi_oauth.status()["debug_token"])
+    except Exception:
+        oauth_partition = 0
+    cache_key = f"{clean_sym}:{count_back}:{end_date}:ssi={oauth_partition}"
     if cache_key in _OHLCV_CACHE:
         return _OHLCV_CACHE[cache_key].copy()
 
@@ -253,6 +277,7 @@ def fetch_vn_ohlcv(symbol: str, count_back: int = 350, end_date: Optional[str] =
     try:
         df = fetch_ssi_ohlcv(clean_sym, count_back, end_date)
         if not df.empty:
+            df = _normalize_ohlcv(df, clean_sym, "SSI")
             _OHLCV_CACHE[cache_key] = df
             return df.copy()
     except Exception as e_ssi:
@@ -266,6 +291,7 @@ def fetch_vn_ohlcv(symbol: str, count_back: int = 350, end_date: Optional[str] =
     try:
         df = _fetch_vietcap_ohlcv(clean_sym, count_back, end_date)
         if not df.empty:
+            df = _normalize_ohlcv(df, clean_sym, "Vietcap")
             _OHLCV_CACHE[cache_key] = df
             return df.copy()
     except Exception as e_vc:
@@ -275,6 +301,7 @@ def fetch_vn_ohlcv(symbol: str, count_back: int = 350, end_date: Optional[str] =
     try:
         df = _fetch_dnse_ohlcv(clean_sym, count_back, end_date)
         if not df.empty:
+            df = _normalize_ohlcv(df, clean_sym, "DNSE")
             _OHLCV_CACHE[cache_key] = df
             return df.copy()
     except Exception as e_dnse:
@@ -427,12 +454,21 @@ def get_vn_fundamentals(symbol: str, *args: Any, **kwargs: Any) -> str:
                 if market_cap == "N/A" and raw_mc:
                     market_cap = f"{float(raw_mc) / 1e9:,.1f} tỷ VND"
                 organ_code = data.get("organCode", clean_sym)
+                exchange = str(data.get("exchange") or data.get("comGroupCode") or "").upper()
+                if exchange in {"HOSE", "HNX", "UPCOM"}:
+                    register_instruments([{"symbol": clean_sym, "exchange": exchange,
+                                           "name": data.get("enOrganName") or organ_code}])
     except Exception as e:
         logger.warning(f"Lỗi lấy chi tiết công ty {clean_sym}: {e}")
 
+    instrument = get_vn_instrument(clean_sym)
+    exchange = instrument.exchange if instrument else "Không xác định"
+    limit = LIMIT_PCT.get(exchange)
+    exchange_text = f"{exchange} (Biên độ ±{limit:g}%)" if limit else exchange
     lines.append(f"**Mã Chứng khoán:** {clean_sym} (Mã tổ chức: {organ_code})")
-    lines.append(f"**Sàn giao dịch & Biên độ giá:** HOSE (Biên độ ±7%)")
-    lines.append(f"**Quy tắc thanh toán:** T+2.5 (cổ phiếu về tài khoản chiều ngày T+2, KHÔNG CÓ BÁN KHỐNG)")
+    lines.append(f"**Sàn giao dịch & Biên độ giá:** {exchange_text}")
+    lines.append("**Quy tắc thanh toán:** Cổ phiếu cơ sở không hỗ trợ bán khống; "
+                 "thời điểm chứng khoán/tiền khả dụng phụ thuộc quy định hiện hành của VSDC và CTCK.")
     lines.append(f"**Giá hiện tại:** {curr_price} | **Vốn hóa:** {market_cap} | **CP Lưu hành:** {shares}\n")
 
     # 2. Key Valuation & Financial Ratios
@@ -551,9 +587,13 @@ def get_vn_cashflow(symbol: str, *args: Any, **kwargs: Any) -> str:
 
 
 def get_vn_macro_data() -> str:
-    """Return Vietnamese macro context and regulatory framework."""
+    """Return structural context without presenting stale figures as live data."""
     return """
 # BỐI CẢNH VĨ MÔ & THỊ TRƯỜNG TÀI CHÍNH VIỆT NAM (SBV & TTCK VN)
+
+> Đây là bối cảnh cấu trúc, không phải số liệu vĩ mô thời gian thực. Chỉ sử dụng
+> số liệu lãi suất, tỷ giá, thanh khoản, giao dịch khối ngoại hoặc margin khi báo
+> cáo dữ liệu kèm nguồn và ngày cập nhật.
 
 1. **Chính sách Tiền tệ Ngân hàng Nhà nước (SBV):**
    - Định hướng điều hành: Ổn định tỷ giá USD/VND, kiểm soát lạm phát và hỗ trợ tăng trưởng kinh tế.
@@ -562,14 +602,13 @@ def get_vn_macro_data() -> str:
    - Hạn mức tăng trưởng tín dụng (Room tín dụng) phân bổ cho các ngân hàng thương mại.
 
 2. **Dòng tiền & Cơ cấu Nhà đầu tư:**
-   - Nhà đầu tư cá nhân trong nước chiếm ~80-85% giá trị giao dịch toàn thị trường.
-   - Giao dịch Khối ngoại: Là chỉ báo dẫn dắt tâm lý thị trường, đặc biệt tại các cổ phiếu kín room hoặc các quỹ ETF ngoại (Fubon, VanEck, Diamond ETF).
-   - Áp lực Margin: Đòn bẩy ký quỹ tại các công ty chứng khoán (CTCK). Khi thị trường giảm mạnh dễ kích hoạt hiện tượng "Call Margin chéo".
+   - Đánh giá nhà đầu tư cá nhân, khối ngoại/ETF và margin chỉ khi có dữ liệu cập nhật.
+   - Không suy diễn tỷ trọng dòng tiền hoặc room ngoại từ dữ liệu lịch sử không ghi ngày.
 
 3. **Vi cấu trúc & Quy tắc Giao dịch:**
    - Biên độ dao động: HOSE (±7%), HNX (±10%), UPCoM (±15%).
-   - Chu kỳ thanh toán: T+2.5 (mua T+0 -> cổ phiếu về tài khoản chiều T+2).
-   - KHÔNG CÓ BÁN KHỐNG (No short selling) trên thị trường cổ phiếu cơ sở.
+   - Thời điểm tiền/chứng khoán khả dụng phải theo quy định VSDC và CTCK hiện hành.
+   - Không giả định có thể bán khống cổ phiếu cơ sở.
 """
 
 

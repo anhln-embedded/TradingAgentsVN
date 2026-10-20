@@ -9,7 +9,6 @@ the token is absent, expired, or the MCP service is unavailable.
 from __future__ import annotations
 
 import json
-import os
 import re
 from datetime import datetime
 from typing import Any
@@ -230,9 +229,11 @@ def fetch_ssi_ohlcv(symbol: str, count_back: int = 350, end_date: str | None = N
     adapter requests the smallest supported range that can cover ``count_back``
     and trims the normalized result to the requested row count.
     """
-    token = os.environ.get("SSI_MCP_ACCESS_TOKEN", "").strip()
-    if not token:
-        raise SSIMCPError("SSI_MCP_ACCESS_TOKEN is not configured")
+    # Delayed import avoids a module cycle: the OAuth client imports the MCP
+    # endpoint and error type from this module.
+    from .ssi_oauth import ssi_oauth
+
+    token = ssi_oauth.access_token()
     if count_back < 1:
         raise ValueError("count_back must be positive")
 
@@ -244,7 +245,13 @@ def fetch_ssi_ohlcv(symbol: str, count_back: int = 350, end_date: str | None = N
         "range": _range_for(count_back),
         "toDate": to_date.strftime("%d/%m/%Y"),
         "pageSize": 1000,
-        "pageIndex": 1,
     }
-    records = _find_records(_call_tool(token, arguments))
+    records: list[dict[str, Any]] = []
+    for page in range(1, 11):
+        page_records = _find_records(_call_tool(token, {**arguments, "pageIndex": page}))
+        if not page_records:
+            break
+        records.extend(page_records)
+        if len(page_records) < arguments["pageSize"] or len(records) >= count_back:
+            break
     return _rows_to_ohlcv(records, symbol).tail(count_back).reset_index(drop=True)

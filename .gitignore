@@ -229,3 +229,5 @@ deploy/.env.*
 .updates/
 results/
 backups/
+saas/
+tenants/

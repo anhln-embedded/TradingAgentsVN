@@ -8,6 +8,8 @@ from typing import Any
 from tradingagents.dataflows.date_window import is_historical
 from tradingagents.dataflows.vendors.yahoo.fundamentals import get_company_profile
 from tradingagents.dataflows.vn_stock import clean_vn_symbol, is_vn_stock
+from tradingagents.markets.vietnam.registry import get_vn_instrument, register_instruments
+from tradingagents.markets.vietnam.rules import LIMIT_PCT
 
 logger = logging.getLogger(__name__)
 
@@ -97,11 +99,16 @@ def _identity(ticker: str) -> dict:
         )
         response.raise_for_status()
         data = response.json().get("data", {})
+        exchange = str(data.get("exchange") or data.get("comGroupCode") or "").upper()
+        if exchange in {"HOSE", "HNX", "UPCOM"}:
+            register_instruments([{"symbol": symbol, "exchange": exchange,
+                                   "name": data.get("enOrganName") or data.get("organCode")}])
+        instrument = get_vn_instrument(symbol)
         return {
             "company_name": data.get("enOrganName") or data.get("organCode") or symbol,
             "sector": data.get("tag", "Chứng khoán Việt Nam"),
             "industry": data.get("tag", "Chứng khoán Việt Nam"),
-            "exchange": data.get("exchange") or "HOSE",
+            "exchange": exchange or (instrument.exchange if instrument else "Unknown"),
             "currency": "VND",
         }
     info = get_company_profile(ticker)
@@ -186,11 +193,20 @@ def build_instrument_context(
             "assume company fundamentals are available."
         )
     elif is_vn_stock(ticker):
+        instrument = get_vn_instrument(ticker)
+        exchange = instrument.exchange if instrument else None
+        limit = LIMIT_PCT.get(exchange or "")
+        rules = (
+            f" It trades on {exchange} with a regular daily limit of ±{limit:g}%."
+            if exchange and limit else
+            " Its exchange is not verified; do not assume HOSE or calculate a price band."
+        )
         context += (
             " This instrument trades on the Vietnamese stock market in VND. "
-            "Settlement is T+2.5; short-selling underlying equities is unavailable. "
-            "Daily price limits are HOSE ±7%, HNX ±10%, and UPCoM ±15%. "
-            "Recommendations must account for these market constraints."
+            "Short-selling underlying equities is unavailable. "
+            "Settlement availability must follow current VSDC and broker rules."
+            + rules
+            + " Recommendations must account for these market constraints."
         )
     return context
 

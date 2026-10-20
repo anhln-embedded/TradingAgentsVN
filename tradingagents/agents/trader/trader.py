@@ -57,8 +57,9 @@ def create_trader(llm):
                     "instrument's quote currency (for example 189.5 or 61200), never a percentage "
                     "or a range; convert a percentage distance to the price level it "
                     "implies, or omit the field if you cannot state a number. "
-                    "For Vietnamese stocks (TTCK VN), ensure entry and stop-loss prices respect daily price limits "
-                    "(HOSE: ±7%, HNX: ±10%, UPCoM: ±15%) and account for T+2.5 settlement cycle (no short-selling). "
+                    "For Vietnamese stocks, use the verified exchange in the instrument context; "
+                    "do not invent an exchange or assume HOSE. Prices will be checked deterministically "
+                    "for tick size and daily limits. Do not propose a short sale of an underlying equity. "
                     + NO_EXTERNAL_TOOLS
                     + get_language_instruction()
                 ),

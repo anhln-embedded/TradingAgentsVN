@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Đăng nhập · TradingAgents VN</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Outfit:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/saas.css?v=6">
+</head>
+<body class="saas-page auth-page">
+  <main class="saas-auth">
+    <div class="auth-brand">
+      <div class="brand-title">TradingAgents <span class="badge-vn">VN</span></div>
+      <p class="auth-subdesc">Hệ thống AI Phân tích Chứng khoán Đa Tác Tử</p>
+    </div>
+
+    <section class="saas-card auth-card">
+      <h2 id="authTitle">Đăng nhập</h2>
+      <p id="authSub" class="auth-sub">Nhập thông tin tài khoản để tiếp tục</p>
+
+      <form id="authForm" novalidate>
+        <div class="form-group">
+          <label for="email">Email / Tên đăng nhập</label>
+          <input id="email" required autocomplete="username" minlength="3" maxlength="160" placeholder="name@example.com hoặc username" spellcheck="false">
+        </div>
+
+        <div class="form-group">
+          <label for="password">Mật khẩu</label>
+          <input id="password" type="password" required autocomplete="current-password" minlength="4" maxlength="256" placeholder="Nhập mật khẩu">
+        </div>
+
+        <div id="authError" class="saas-error" role="alert"></div>
+
+        <button id="submit" type="submit" class="btn-primary">Đăng nhập</button>
+      </form>
+
+      <div class="card-footer">
+        <button id="switchMode" class="btn-link" type="button">Chưa có tài khoản? Đăng ký</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/login.js"></script>
+</body>
+</html>

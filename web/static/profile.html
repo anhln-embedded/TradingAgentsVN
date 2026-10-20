@@ -1,0 +1,12 @@
+<!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Tài khoản · TradingAgents VN</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/lucide@latest"></script>
+<link rel="stylesheet" href="/static/saas.css?v=5"></head>
+<body class="saas-page"><div class="account-bar"><div class="account-bar-inner"><div class="account-bar-left"><span id="accountQuota">Đang tải tài khoản…</span></div><div class="account-bar-right"><a href="/" class="account-link">Về phân tích</a><button id="logoutButton" class="account-btn-logout">Đăng xuất</button></div></div></div>
+<main class="saas-auth"><section class="saas-card"><h1>Đổi mật khẩu</h1><p class="saas-muted">Sau khi đổi mật khẩu, mọi thiết bị cần đăng nhập lại.</p>
+<form id="passwordForm"><label>Mật khẩu hiện tại<input name="current_password" type="password" autocomplete="current-password" required minlength="4" maxlength="256"></label><label>Mật khẩu mới<input name="new_password" type="password" autocomplete="new-password" required minlength="4" maxlength="256"></label><p id="passwordError" class="saas-error" role="alert"></p><button>Đổi mật khẩu</button></form></section>
+<section id="ssiIntegration" class="saas-card" hidden><h1>Nguồn dữ liệu SSI</h1><p id="ssiStatus" class="saas-muted">Đang kiểm tra…</p><p class="saas-muted">Bạn sẽ đăng nhập trực tiếp trên trang chính thức của SSI. TradingAgentsVN không nhận mật khẩu, OTP hoặc sao chép cookie đăng nhập SSI.</p><div><a id="ssiConnect" class="account-link" href="/api/integrations/ssi/connect">Đăng nhập bằng tài khoản SSI</a><button id="ssiDisconnect" type="button" hidden>Ngắt kết nối</button></div><p id="ssiError" class="saas-error" role="alert"></p></section></main>
+<script src="/static/account.js"></script><script src="/static/profile.js"></script></body></html>

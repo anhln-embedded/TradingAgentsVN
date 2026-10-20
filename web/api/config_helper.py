@@ -93,6 +93,9 @@ def mask_key(key: str | None) -> str:
 
 def get_current_ai_config() -> Dict[str, Any]:
     """Retrieve active LLM configurations and masked API keys."""
+    from dotenv import load_dotenv
+    # Multiple API processes read the same persisted configuration.
+    load_dotenv(ENV_PATH, override=True)
     provider = os.environ.get("TRADINGAGENTS_LLM_PROVIDER") or DEFAULT_CONFIG.get("llm_provider", "openai_compatible")
     deep_model = os.environ.get("TRADINGAGENTS_DEEP_THINK_LLM") or DEFAULT_CONFIG.get("deep_think_llm", "Kiro")
     quick_model = os.environ.get("TRADINGAGENTS_QUICK_THINK_LLM") or DEFAULT_CONFIG.get("quick_think_llm", "Kiro")

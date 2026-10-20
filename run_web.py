@@ -4,7 +4,9 @@ Starts the FastAPI server with real-time SSE streaming and opens the web browser
 Completely non-invasive: does not modify any core files in tradingagents/.
 """
 
+import atexit
 import os
+import subprocess
 import sys
 import webbrowser
 from threading import Timer
@@ -33,14 +35,41 @@ def main():
     print("=" * 65)
     print("  🚀 TRADINGAGENTS-VN: KHỞI CHẠY GIAO DIỆN WEB DASHBOARD")
     print(f"  🌐 URL: http://{host}:{port}")
-    print("  ✨ Kiến trúc: Non-invasive Overlay (Giữ nguyên vẹn Core Upstream)")
+    print("  ✨ Tự động khởi chạy Worker xử lý Multi-Agent AI song song")
     print("=" * 65)
+
+    # Automatically start worker in background for local execution
+    worker_proc = None
+    if os.getenv("TA_STANDALONE_WORKER", "false").lower() != "true":
+        worker_env = os.environ.copy()
+        worker_env["PYTHONUNBUFFERED"] = "1"
+        worker_proc = subprocess.Popen([sys.executable, "-m", "vnapp.worker"], env=worker_env)
+
+    def cleanup_worker():
+        nonlocal worker_proc
+        if worker_proc and worker_proc.poll() is None:
+            try:
+                worker_proc.terminate()
+                worker_proc.wait(timeout=3)
+            except Exception:
+                try:
+                    worker_proc.kill()
+                except Exception:
+                    pass
+            worker_proc = None
+
+    atexit.register(cleanup_worker)
 
     # Open browser automatically after 1.2 seconds
     Timer(1.2, open_browser).start()
 
     # Run Uvicorn server
-    uvicorn.run("web.api.server:app", host=host, port=port, reload=True, log_level="info")
+    try:
+        uvicorn.run("web.api.server:app", host=host, port=port,
+                    reload=os.getenv("TA_WEB_RELOAD", "false").lower() == "true",
+                    log_level="info")
+    finally:
+        cleanup_worker()
 
 if __name__ == "__main__":
     main()

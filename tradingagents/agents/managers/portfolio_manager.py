@@ -18,12 +18,43 @@ from tradingagents.agents.context import (
 from tradingagents.agents.rating import parse_rating
 from tradingagents.agents.schemas import PortfolioDecision, render_pm_decision
 from tradingagents.agents.structured import NO_EXTERNAL_TOOLS, bind_structured, invoke_structured
+from tradingagents.dataflows.vn_stock import is_vn_stock
+from tradingagents.markets.vietnam.registry import get_vn_instrument
+from tradingagents.markets.vietnam.rules import round_to_tick
+
+
+def _enforce_vn_price_ticks(ticker: str, decision: PortfolioDecision) -> PortfolioDecision:
+    """Normalize LLM price fields to executable exchange ticks."""
+    if not is_vn_stock(ticker):
+        return decision
+    instrument = get_vn_instrument(ticker)
+    if instrument is None:
+        return decision.model_copy(update={
+            "executive_summary": decision.executive_summary
+            + " Cảnh báo: chưa xác minh được sàn nên các mức giá chưa được xác nhận."
+        })
+    changes = {}
+    adjusted = []
+    for field in ("price_target", "entry_price", "stop_loss"):
+        value = getattr(decision, field)
+        if value is not None:
+            normalized = round_to_tick(float(value), instrument.exchange)
+            changes[field] = normalized
+            if normalized != value:
+                adjusted.append(field)
+    if adjusted:
+        changes["executive_summary"] = (
+            decision.executive_summary
+            + f" Các mức {', '.join(adjusted)} đã được làm tròn theo bước giá {instrument.exchange}."
+        )
+    return decision.model_copy(update=changes) if changes else decision
 
 
 def create_portfolio_manager(llm):
     structured_llm = bind_structured(llm, PortfolioDecision, "Portfolio Manager")
 
     def portfolio_manager_node(state) -> dict:
+        ticker = str(state["company_of_interest"])
         instrument_context = get_instrument_context_from_state(state)
         portfolio_context = get_portfolio_context_from_state(state)
 
@@ -70,8 +101,9 @@ Ground every conclusion in specific evidence from the analysts. The risk debate 
 Write these sections, in this order, starting with the rating on its own line:
 
 - **Rating**: exactly one of Buy / Overweight / Hold / Underweight / Sell
-- **Executive Summary**: the call and how to act on it
+- **Executive Summary**: the call and how to act on it (stating specific entry/sell price levels, stop loss, and position sizing)
 - **Investment Thesis**: the evidence that decided it, and what would change it
+- **Price Target**, **Time Horizon**, **Entry Price**, **Stop Loss**, **Position Sizing**: concrete execution levels
 
 {NO_EXTERNAL_TOOLS}{get_language_instruction()}"""
 
@@ -79,6 +111,7 @@ Write these sections, in this order, starting with the rating on its own line:
         # Read back from text, a rating the thesis quotes could replace it.
         decision = invoke_structured(structured_llm, prompt, "Portfolio Manager")
         if decision is not None:
+            decision = _enforce_vn_price_ticks(ticker, decision)
             final_trade_decision = render_pm_decision(decision)
             final_rating = decision.rating.value
         else:

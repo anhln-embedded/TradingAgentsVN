@@ -19,9 +19,22 @@
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
   <!-- Stylesheet with Cache Buster -->
-  <link rel="stylesheet" href="/static/style.css?v=2.6">
+  <link rel="stylesheet" href="/static/style.css?v=2.9">
+  <link rel="stylesheet" href="/static/saas.css?v=7">
 </head>
 <body>
+  <div class="account-bar">
+    <div class="account-bar-inner">
+      <div class="account-bar-left">
+        <span id="accountQuota">Đang tải tài khoản…</span>
+      </div>
+      <div class="account-bar-right">
+        <a href="/account" class="account-link">Tài khoản</a>
+        <a id="adminLink" href="/admin" class="account-link" hidden>Quản trị người dùng</a>
+        <button id="logoutButton" class="account-btn-logout">Đăng xuất</button>
+      </div>
+    </div>
+  </div>
   <div class="app-container">
     <!-- TOP NAVIGATION -->
     <header class="navbar">
@@ -44,13 +57,13 @@
 
       <div class="nav-right">
         <!-- AI Config Button -->
-        <button class="btn btn-secondary" id="btnOpenConfig" title="Cấu hình Nhà Cung Cấp AI & API Key">
+        <button class="btn btn-secondary" id="btnOpenConfig" hidden title="Cấu hình Nhà Cung Cấp AI & API Key">
           <i data-lucide="sliders"></i>
           <span>Cấu hình AI</span>
         </button>
 
         <!-- Git Upstream Update Button -->
-        <button class="btn btn-secondary" id="btnOpenGit" title="Kiểm tra & Cập nhật Upstream từ TradingAgents gốc">
+        <button class="btn btn-secondary" id="btnOpenGit" hidden title="Kiểm tra & Cập nhật Upstream từ TradingAgents gốc">
           <i data-lucide="git-pull-request"></i>
           <span>Cập nhật Upstream</span>
         </button>
@@ -335,10 +348,20 @@
           </div>
 
           <div class="decision-metrics">
-            <div class="metric-box">
-              <span class="metric-label">Giá Đóng Cửa</span>
-              <span class="metric-value highlight" id="metricClosePrice">--</span>
-              <span class="metric-sub" id="metricCloseDateSub">VND</span>
+            <div class="metric-box live-price-box" id="metricPriceBox">
+              <div class="metric-label-row">
+                <span class="metric-label" id="metricPriceLabel">Giá Đóng Cửa</span>
+                <span class="live-pulse-badge" id="livePriceBadge" style="display: none;">
+                  <span class="pulse-dot"></span> LIVE
+                </span>
+              </div>
+              <div class="metric-price-row">
+                <span class="metric-value highlight" id="metricClosePrice">--</span>
+                <span class="metric-change-tag" id="metricPriceChangeTag" style="display: none;"></span>
+              </div>
+              <div class="metric-sub-row">
+                <span class="metric-sub" id="metricCloseDateSub">VND</span>
+              </div>
             </div>
             <div class="metric-box" id="metricEntryBox">
               <span class="metric-label" id="metricEntryLabel">Giá Vào Lệnh (Entry)</span>
@@ -729,6 +752,8 @@
   </div>
 
   <!-- App Script with Cache Buster -->
-  <script src="/static/app.js?v=2.5"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.7/dist/purify.min.js"></script>
+  <script src="/static/account.js?v=7"></script>
+  <script src="/static/app.js?v=7"></script>
 </body>
 </html>

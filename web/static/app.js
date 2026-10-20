@@ -4,7 +4,8 @@
  * agent node status visualizer, and markdown rendering.
  */
 
-document.addEventListener("DOMContentLoaded", () => {
+document.addEventListener("DOMContentLoaded", async () => {
+  try { await window.TradingAccount.ready; } catch (err) { console.warn(err); return; }
   // Initialize Lucide icons
   if (window.lucide) {
     window.lucide.createIcons();
@@ -36,7 +37,18 @@ document.addEventListener("DOMContentLoaded", () => {
       judge: "",
       risk: "",
     },
+    isUnloading: false,
+    currentExchange: null,
+    marketSession: null,
   };
+
+  window.addEventListener("beforeunload", () => {
+    state.isUnloading = true;
+    if (state.eventSource) {
+      try { state.eventSource.close(); } catch (_) {}
+      state.eventSource = null;
+    }
+  });
 
   // DOM Elements
   const el = {
@@ -54,8 +66,12 @@ document.addEventListener("DOMContentLoaded", () => {
     spotlightTicker: document.getElementById("spotlightTicker"),
     spotlightCompany: document.getElementById("spotlightCompany"),
     spotlightExchange: document.getElementById("spotlightExchange"),
+    metricPriceBox: document.getElementById("metricPriceBox"),
+    metricPriceLabel: document.getElementById("metricPriceLabel"),
+    livePriceBadge: document.getElementById("livePriceBadge"),
     metricClosePrice: document.getElementById("metricClosePrice"),
     metricCloseDateSub: document.getElementById("metricCloseDateSub"),
+    metricPriceChangeTag: document.getElementById("metricPriceChangeTag"),
     metricEntry: document.getElementById("metricEntry"),
     metricEntryBox: document.getElementById("metricEntryBox"),
     metricEntryLabel: document.getElementById("metricEntryLabel"),
@@ -184,36 +200,140 @@ document.addEventListener("DOMContentLoaded", () => {
     return str;
   }
 
-  // Ticker to Exchange Mapping
-  const tickerExchangeMap = {
-    BSR: "HOSE",
-    PLX: "HOSE",
-    FPT: "HOSE",
-    VNM: "HOSE",
-    HPG: "HOSE",
-    SSI: "HOSE",
-    VCB: "HOSE",
-    MBB: "HOSE",
-    TCB: "HOSE",
-    MWG: "HOSE",
-    VIC: "HOSE",
-    VHM: "HOSE",
-    DGC: "HOSE",
-    PVD: "HOSE",
-    PVS: "HNX",
-    STB: "HOSE",
-    GMD: "HOSE",
-  };
+  function formatNumberVN(val) {
+    if (val === null || val === undefined || isNaN(val)) return "--";
+    return Math.round(Number(val)).toLocaleString("en-US");
+  }
 
-  function updateTickerExchangeBadge(sym) {
-    const clean = (sym || "").toUpperCase().trim();
-    const exchange = tickerExchangeMap[clean] || "HOSE";
+  function formatVolumeCompact(vol) {
+    if (!vol || isNaN(vol)) return "--";
+    const v = Number(vol);
+    if (v >= 1_000_000) return (v / 1_000_000).toFixed(2) + "M cp";
+    if (v >= 1_000) return (v / 1_000).toFixed(1) + "K cp";
+    return Math.round(v).toLocaleString("en-US") + " cp";
+  }
+
+  state.lastPrice = null;
+  state.quoteRequest = 0;
+
+  async function fetchLiveQuote(symbol = state.currentTicker) {
+    if (!symbol) return;
+    const clean = symbol.trim().toUpperCase();
+    const today = getLocalDateString();
+    const isHistorical = state.currentTradeDate && state.currentTradeDate < today;
+
+    if (isHistorical) {
+      if (el.metricPriceLabel) el.metricPriceLabel.textContent = "Giá Đóng Cửa";
+      if (el.livePriceBadge) el.livePriceBadge.style.display = "none";
+      if (el.metricPriceChangeTag) el.metricPriceChangeTag.style.display = "none";
+      return;
+    }
+
+    const reqId = ++state.quoteRequest;
+    try {
+      const res = await fetch(`/api/quote/${encodeURIComponent(clean)}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      if (reqId !== state.quoteRequest || clean !== state.currentTicker) return;
+      state.currentExchange = data.exchange || null;
+      updateTickerExchangeBadge(clean, state.currentExchange);
+      await fetchMarketSession(clean);
+
+      const session = state.marketSession || getMarketSessionInfo();
+      const isTrading = session.status === "open";
+      const isBreak = session.status === "break";
+
+      // 1. Update Label & Badge
+      if (isTrading) {
+        if (el.metricPriceLabel) el.metricPriceLabel.textContent = "Giá Khớp Lệnh";
+        if (el.livePriceBadge) {
+          el.livePriceBadge.style.display = "inline-flex";
+          el.livePriceBadge.innerHTML = '<span class="pulse-dot"></span> LIVE';
+        }
+      } else if (isBreak) {
+        const breakText = session.text.includes("trưa") ? "Giá Tạm Khớp (Nghỉ trưa)" : "Giá Thỏa Thuận";
+        if (el.metricPriceLabel) el.metricPriceLabel.textContent = breakText;
+        if (el.livePriceBadge) {
+          el.livePriceBadge.style.display = "inline-flex";
+          el.livePriceBadge.innerHTML = '<span class="pulse-dot" style="background:#f59e0b"></span> ' + (session.text.includes("trưa") ? "NGHỈ TRƯA" : "THỎA THUẬN");
+        }
+      } else {
+        if (el.metricPriceLabel) el.metricPriceLabel.textContent = "Giá Đóng Cửa";
+        if (el.livePriceBadge) el.livePriceBadge.style.display = "none";
+      }
+
+      // 2. Animate Tick Flash if price changed
+      const prevPrice = state.lastPrice;
+      if (prevPrice !== null && (isTrading || isBreak)) {
+        el.metricClosePrice.classList.remove("flash-up", "flash-down");
+        void el.metricClosePrice.offsetWidth;
+        if (data.price > prevPrice) {
+          el.metricClosePrice.classList.add("flash-up");
+        } else if (data.price < prevPrice) {
+          el.metricClosePrice.classList.add("flash-down");
+        }
+      }
+      state.lastPrice = data.price;
+
+      // 3. Update Price & Color
+      el.metricClosePrice.textContent = formatVNDPrice(data.price);
+      el.metricClosePrice.className = "metric-value highlight";
+      let tagClass = "ref";
+      let arrow = "■ ";
+      let sign = "";
+
+      if (data.ceiling && data.price >= data.ceiling) {
+        el.metricClosePrice.classList.add("price-ceil");
+        tagClass = "ceil";
+        arrow = "▲ ";
+        sign = "+";
+      } else if (data.floor && data.price <= data.floor) {
+        el.metricClosePrice.classList.add("price-floor");
+        tagClass = "floor";
+        arrow = "▼ ";
+      } else if (data.change > 0) {
+        el.metricClosePrice.classList.add("price-up");
+        tagClass = "up";
+        arrow = "▲ ";
+        sign = "+";
+      } else if (data.change < 0) {
+        el.metricClosePrice.classList.add("price-down");
+        tagClass = "down";
+        arrow = "▼ ";
+      } else {
+        el.metricClosePrice.classList.add("price-ref");
+        tagClass = "ref";
+      }
+
+      // 4. Update Change Tag
+      if (el.metricPriceChangeTag) {
+        el.metricPriceChangeTag.style.display = "inline-flex";
+        el.metricPriceChangeTag.className = `metric-change-tag ${tagClass}`;
+        const pctStr = data.change_percent >= 0 ? `+${data.change_percent}%` : `${data.change_percent}%`;
+        el.metricPriceChangeTag.textContent = `${arrow}${sign}${formatNumberVN(data.change)} (${pctStr})`;
+      }
+
+      // 5. Update Subtext
+      if (el.metricCloseDateSub) {
+        if (isTrading || isBreak) {
+          el.metricCloseDateSub.textContent = `TC: ${formatNumberVN(data.ref_price)} • KL: ${formatVolumeCompact(data.volume)}`;
+        } else {
+          el.metricCloseDateSub.textContent = `Chốt ngày ${formatDateVN(today)} • TC: ${formatNumberVN(data.ref_price)}`;
+        }
+      }
+    } catch (err) {
+      console.warn("Lỗi cập nhật giá realtime:", err);
+    }
+  }
+
+  function updateTickerExchangeBadge(sym, resolvedExchange = state.currentExchange) {
+    const exchange = resolvedExchange || "Chưa xác định";
     if (el.tickerExchangeBadge) {
       el.tickerExchangeBadge.textContent = exchange;
     }
     if (el.spotlightExchange) {
-      const marginLimit = exchange === "HNX" ? "±10%" : exchange === "UPCOM" ? "±15%" : "±7%";
-      el.spotlightExchange.innerHTML = `<i data-lucide="building"></i> ${exchange} (${marginLimit})`;
+      const marginLimit = exchange === "HNX" ? "±10%" : exchange === "UPCOM" ? "±15%" : exchange === "HOSE" ? "±7%" : null;
+      el.spotlightExchange.innerHTML = `<i data-lucide="building"></i> ${exchange}${marginLimit ? ` (${marginLimit})` : ""}`;
       if (window.lucide) window.lucide.createIcons();
     }
   }
@@ -315,6 +435,7 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       // Load market data up to today
       loadMarketChart(state.currentTicker, state.currentTimeframe, today);
+      fetchLiveQuote(state.currentTicker);
     });
   }
 
@@ -337,6 +458,13 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     // Cập nhật biểu đồ và toàn bộ thông tin thị trường đến thời điểm ngày đó
     loadMarketChart(state.currentTicker, state.currentTimeframe, chosen);
+    if (chosen === today) {
+      fetchLiveQuote(state.currentTicker);
+    } else {
+      if (el.metricPriceLabel) el.metricPriceLabel.textContent = "Giá Đóng Cửa";
+      if (el.livePriceBadge) el.livePriceBadge.style.display = "none";
+      if (el.metricPriceChangeTag) el.metricPriceChangeTag.style.display = "none";
+    }
   });
 
   // Real-time Live Market Clock & Session Status
@@ -414,14 +542,30 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  async function fetchMarketSession(symbol = state.currentTicker) {
+    try {
+      const response = await fetch(`/api/market-session/${encodeURIComponent(symbol)}`, {cache: "no-store"});
+      if (!response.ok) return;
+      const value = await response.json();
+      state.marketSession = {
+        status: value.status,
+        cssClass: value.status === "agreement" ? "break" : value.status,
+        text: value.label,
+        desc: `${value.exchange} • ${value.time}`,
+      };
+    } catch (err) {
+      console.warn("Không thể tải trạng thái phiên Việt Nam:", err);
+    }
+  }
+
   function updateMarketClockAndSession() {
     const now = new Date();
-    const hours = String(now.getHours()).padStart(2, "0");
-    const minutes = String(now.getMinutes()).padStart(2, "0");
-    const seconds = String(now.getSeconds()).padStart(2, "0");
+    const clockParts = new Intl.DateTimeFormat("vi-VN", {
+      timeZone: "Asia/Ho_Chi_Minh", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+    }).format(now);
 
     if (el.liveClockText) {
-      el.liveClockText.textContent = `${hours}:${minutes}:${seconds}`;
+      el.liveClockText.textContent = clockParts;
     }
 
     if (el.liveClockDateText) {
@@ -429,11 +573,11 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     if (el.marketSessionBadge && el.marketSessionText) {
-      const session = getMarketSessionInfo(now);
+      const session = state.marketSession || getMarketSessionInfo(now);
       el.marketSessionBadge.className = `session-status ${session.cssClass}`;
       el.marketSessionText.textContent = session.text;
       if (el.marketClockWidget) {
-        el.marketClockWidget.title = `Giờ hệ thống: ${hours}:${minutes}:${seconds} | ${session.desc}`;
+        el.marketClockWidget.title = `Giờ Việt Nam: ${clockParts} | ${session.desc}`;
       }
     }
   }
@@ -465,6 +609,8 @@ document.addEventListener("DOMContentLoaded", () => {
     resetReportData();
     const request = state.viewRequest;
     state.currentTicker = sym;
+    state.currentExchange = null;
+    state.marketSession = null;
     el.tickerInput.value = sym;
     document.querySelectorAll(".ticker-chip").forEach(chip => chip.classList.toggle("active", chip.textContent === sym));
     updateCompanyIdentity(sym);
@@ -472,6 +618,7 @@ document.addEventListener("DOMContentLoaded", () => {
     el.currentStepLabel.textContent = "Đang tải phân tích gần nhất...";
     if (el.progressMeta) el.progressMeta.classList.remove("status-completed");
     loadMarketChart(sym);
+    fetchLiveQuote(sym);
     renderMarkdown(el.reasoningContent, "Đang tải phân tích gần nhất của " + sym + "...");
     try {
       const res = await fetch("/api/history", {cache: "no-store"});
@@ -596,13 +743,91 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
 
-  // Start Analysis Click
-  el.btnStartAnalysis.addEventListener("click", startAnalysis);
+  // Start / Cancel Analysis Toggle Click
+  el.btnStartAnalysis.addEventListener("click", () => {
+    if (state.isAnalyzing) {
+      cancelCurrentAnalysis();
+    } else {
+      startAnalysis();
+    }
+  });
+
+  // Cancel Analysis Handler
+  async function cancelCurrentAnalysis() {
+    let runId = state.currentRunId;
+    if (!runId) {
+      try {
+        const res = await fetch("/api/workspace");
+        if (res.ok) {
+          const data = await res.json();
+          if (data.run && (data.run.status === "running" || data.run.status === "queued")) {
+            runId = data.run.id;
+          }
+        }
+      } catch (err) {
+        console.warn("Lỗi kiểm tra phiên cần hủy:", err);
+      }
+    }
+
+    if (!runId && !state.isAnalyzing) {
+      alert("Hiện không có phiên phân tích nào đang chạy để hủy.");
+      return;
+    }
+
+    el.btnStartAnalysis.disabled = true;
+    el.btnStartAnalysis.innerHTML = '<i data-lucide="loader" class="spin"></i> <span>Đang hủy...</span>';
+    if (window.lucide) window.lucide.createIcons();
+
+    try {
+      if (runId) {
+        await window.TradingAccount.request(`/api/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" });
+      }
+    } catch (err) {
+      console.warn("Lỗi gọi API hủy phiên:", err);
+    } finally {
+      handleAnalysisError("Phiên phân tích đã được hủy bởi người dùng.");
+      window.TradingAccount.refresh().catch(console.warn);
+    }
+  }
 
   // Initialize TradingView Chart
   initTradingViewChart();
-  // Check if historical BSR exists and load it to preview (keep default today date)
-  selectTicker(state.currentTicker);
+  // Server state is shared across devices of the authenticated account.
+  async function syncActiveRun() {
+    if (state.isAnalyzing || state.syncingRun) return;
+    state.syncingRun = true;
+    try {
+      const response = await fetch("/api/workspace");
+      if (!response.ok) throw new Error("Không thể tải phiên đang chạy.");
+      const run = (await response.json()).run;
+      if (run && run.id !== state.currentRunId && !state.isAnalyzing) {
+        if (run.status === "cancelled" || run.status === "failed") return;
+        el.tickerInput.value = run.ticker;
+        el.tradeDateInput.value = run.trade_date;
+        await startAnalysis(run);
+      }
+    } catch (err) { console.warn(err); }
+    finally { state.syncingRun = false; }
+  }
+  await syncActiveRun();
+  if (!state.isAnalyzing) {
+    selectTicker(state.currentTicker);
+  }
+  fetchLiveQuote(state.currentTicker);
+
+  setInterval(async () => {
+    await syncActiveRun();
+    window.TradingAccount.refresh().catch(console.warn);
+  }, 4000);
+
+  // Live Quote Polling every 3.5s for real-time stock ticker updates
+  setInterval(() => {
+    if (document.hidden) return;
+    const today = getLocalDateString();
+    if (!state.currentTradeDate || state.currentTradeDate === today) {
+      fetchLiveQuote(state.currentTicker);
+    }
+  }, 3500);
 
   // =========================================================================
   // TradingView Lightweight Charts
@@ -727,11 +952,21 @@ document.addEventListener("DOMContentLoaded", () => {
 
         // Update close price & date to selected point-in-time
         const lastCandle = data.candles[data.candles.length - 1];
-        el.metricClosePrice.textContent = formatVNDPrice(lastCandle.close);
         el.spotlightTicker.textContent = symbol;
         updateTickerExchangeBadge(symbol);
-        if (el.metricCloseDateSub && lastCandle.time) {
-          el.metricCloseDateSub.textContent = `Chốt ngày ${formatDateVN(lastCandle.time)}`;
+        const today = getLocalDateString();
+        const isHistorical = (endDate && endDate < today) || (state.currentTradeDate && state.currentTradeDate < today);
+        if (isHistorical) {
+          el.metricClosePrice.textContent = formatVNDPrice(lastCandle.close);
+          el.metricClosePrice.className = "metric-value highlight";
+          if (el.metricPriceLabel) el.metricPriceLabel.textContent = "Giá Đóng Cửa";
+          if (el.livePriceBadge) el.livePriceBadge.style.display = "none";
+          if (el.metricPriceChangeTag) el.metricPriceChangeTag.style.display = "none";
+          if (el.metricCloseDateSub && lastCandle.time) {
+            el.metricCloseDateSub.textContent = `Chốt ngày ${formatDateVN(lastCandle.time)}`;
+          }
+        } else {
+          fetchLiveQuote(symbol);
         }
       }
     } catch (err) {
@@ -742,7 +977,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // =========================================================================
   // Real-time SSE Analysis Execution
   // =========================================================================
-  function startAnalysis() {
+  async function startAnalysis(savedRun = null) {
     if (state.isAnalyzing) return;
 
     const ticker = el.tickerInput.value.trim().toUpperCase();
@@ -752,7 +987,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     const tradeDate = el.tradeDateInput.value;
-    const selectedAnalysts = Array.from(
+    const selectedAnalysts = savedRun ? savedRun.analysts : Array.from(
       document.querySelectorAll("#analystPills input:checked")
     ).map((i) => i.value);
 
@@ -766,22 +1001,41 @@ document.addEventListener("DOMContentLoaded", () => {
     updateCompanyIdentity(ticker);
     state.currentTradeDate = tradeDate;
 
-    el.btnStartAnalysis.classList.add("loading");
-    el.btnStartAnalysis.innerHTML = '<i data-lucide="loader" class="spin"></i> Đang Phân Tích...';
+    // Transform button into "Hủy Phiên" (Red cancel button, clickable)
+    el.btnStartAnalysis.className = "btn btn-run btn-cancelling";
+    el.btnStartAnalysis.disabled = false;
+    el.btnStartAnalysis.innerHTML = '<i data-lucide="square" class="btn-icon"></i> <span>Hủy Phiên</span>';
     el.systemStatus.className = "status-indicator running";
     el.systemStatus.querySelector(".status-label").textContent = `Đang phân tích ${ticker}...`;
-    el.currentStepLabel.textContent = "Khởi tạo môi trường LangGraph...";
+    el.currentStepLabel.textContent = savedRun?.status === "running" ? "Đang khôi phục tiến độ..." : "Đang chờ đến lượt phân tích...";
     if (window.lucide) window.lucide.createIcons();
 
+    state.runStartedAt = savedRun ? savedRun.created_at * 1000 : Date.now();
     startTimer();
     appendTerminal("system", "HỆ THỐNG", `Bắt đầu phiên phân tích cho cổ phiếu ${ticker} (Ngày: ${tradeDate})...`);
 
-    // Build SSE URL
-    const url = `/api/analyze/stream?ticker=${encodeURIComponent(ticker)}&trade_date=${encodeURIComponent(
-      tradeDate
-    )}&analysts=${encodeURIComponent(selectedAnalysts.join(","))}`;
-
-    state.eventSource = new EventSource(url);
+    let run = savedRun;
+    try {
+      if (!run) {
+        run = await window.TradingAccount.request("/api/runs", {
+          ticker, trade_date: tradeDate, analysts: selectedAnalysts, request_key: crypto.randomUUID(),
+        });
+      }
+      state.currentRunId = run.id;
+      state.runStartedAt = run.created_at * 1000;
+      window.TradingAccount.refresh().catch(console.warn);
+    } catch (err) {
+      handleAnalysisError(err.message);
+      return;
+    }
+    const isCompleted = savedRun && savedRun.status === "completed";
+    const connectAfter = isCompleted ? (run.event_seq || 0) : 0;
+    state.eventSource = new EventSource(`/api/runs/${encodeURIComponent(run.id)}/events?after=${connectAfter}`);
+    state.eventSource.onopen = () => {
+      if (state.isAnalyzing) {
+        el.systemStatus.querySelector(".status-label").textContent = `Đang phân tích ${ticker}...`;
+      }
+    };
 
     state.eventSource.addEventListener("init", (e) => {
       const data = JSON.parse(e.data);
@@ -797,7 +1051,13 @@ document.addEventListener("DOMContentLoaded", () => {
     state.eventSource.addEventListener("agent_status", (e) => {
       const data = JSON.parse(e.data);
       updateAgentNode(data.code || data.agent, data.status);
-      appendTerminal("agent", "AGENT", `${data.agent} đã hoàn thành phân tích.`);
+      if (data.status === "completed") {
+        appendTerminal("agent", "AGENT", `${data.agent} đã hoàn thành phân tích.`);
+      } else if (data.status === "in_progress") {
+        appendTerminal("agent", "AGENT", `${data.agent} đang tiến hành phân tích...`);
+      } else if (data.status === "failed") {
+        appendTerminal("error", "AGENT", `${data.agent} gặp lỗi.`);
+      }
     });
 
     state.eventSource.addEventListener("tool_call", (e) => {
@@ -863,15 +1123,31 @@ document.addEventListener("DOMContentLoaded", () => {
       handleAnalysisError(data.error);
     });
 
+    state.eventSource.addEventListener("session_expired", () => { location.assign("/login"); });
+
+    // Restore a consistent snapshot, then consume only events after its sequence.
+    const snapshot = run.snapshot || {};
+    const replay = (kind, data) => state.eventSource.dispatchEvent(new MessageEvent(kind, {data: JSON.stringify(data)}));
+    if (isCompleted) {
+      if (snapshot.phase_start) replay("phase_start", snapshot.phase_start);
+      for (const data of Object.values(snapshot.agents || {})) replay("agent_status", data);
+      for (const [section, content] of Object.entries(snapshot.reports || {})) replay("report_section", {section, content});
+      for (const data of Object.values(snapshot.debates || {})) replay("debate_update", data);
+      if (snapshot.complete) replay("complete", snapshot.complete);
+      else if (snapshot.run_error) replay("run_error", snapshot.run_error);
+    }
+
+    if (!state.eventSource) return;
     state.eventSource.onerror = (e) => {
+      if (state.isUnloading) return;
       console.warn("SSE EventSource closed or error:", e);
-      // Close event source immediately to prevent browser infinite reconnection
-      if (state.eventSource) {
-        state.eventSource.close();
-        state.eventSource = null;
+      if (state.eventSource && state.eventSource.readyState === EventSource.CLOSED) {
+        handleAnalysisError("Không thể kết nối lại phiên phân tích. Hãy kiểm tra server và lịch sử báo cáo.");
+        return;
       }
+      // EventSource retries transient failures with Last-Event-ID automatically.
       if (state.isAnalyzing) {
-        handleAnalysisError("Kết nối tới máy chủ phân tích đã đóng hoặc tiến trình dừng do lỗi.");
+        el.systemStatus.querySelector(".status-label").textContent = "Mất kết nối, đang kết nối lại...";
       }
     };
   }
@@ -879,6 +1155,7 @@ document.addEventListener("DOMContentLoaded", () => {
   function handleAnalysisError(errorMsg) {
     if (!state.isAnalyzing) return;
     state.isAnalyzing = false;
+    window.TradingAccount.refresh().catch(console.warn);
     stopTimer();
 
     if (state.eventSource) {
@@ -886,19 +1163,21 @@ document.addEventListener("DOMContentLoaded", () => {
       state.eventSource = null;
     }
 
-    el.btnStartAnalysis.classList.remove("loading");
+    el.btnStartAnalysis.className = "btn btn-primary btn-run";
+    el.btnStartAnalysis.disabled = false;
     el.btnStartAnalysis.innerHTML = '<i data-lucide="play" class="btn-icon"></i> <span>Bắt Đầu Phân Tích</span>';
-    el.systemStatus.className = "status-indicator error";
-    el.systemStatus.querySelector(".status-label").textContent = "Gặp lỗi phân tích!";
-    el.currentStepLabel.textContent = "Tiến trình dừng lại do lỗi";
+    const isCancelled = errorMsg.includes("đã được hủy");
+    el.systemStatus.className = isCancelled ? "status-indicator ready" : "status-indicator error";
+    el.systemStatus.querySelector(".status-label").textContent = isCancelled ? "Hệ thống sẵn sàng" : "Gặp lỗi phân tích!";
+    el.currentStepLabel.textContent = isCancelled ? "Phiên phân tích đã dừng" : "Tiến trình dừng lại do lỗi";
 
     // Mark currently running nodes as error
     document.querySelectorAll(".agent-node.running").forEach((node) => {
       node.classList.remove("running");
-      node.style.borderColor = "#f43f5e";
-      node.querySelector(".node-badge").textContent = "Lỗi";
-      node.querySelector(".node-badge").style.background = "#f43f5e";
-      node.querySelector(".node-badge").style.color = "#fff";
+      node.style.borderColor = isCancelled ? "var(--border-subtle)" : "#f43f5e";
+      node.querySelector(".node-badge").textContent = isCancelled ? "Chờ" : "Lỗi";
+      node.querySelector(".node-badge").style.background = isCancelled ? "var(--bg-card)" : "#f43f5e";
+      node.querySelector(".node-badge").style.color = isCancelled ? "var(--text-muted)" : "#fff";
     });
 
     let friendlyTip = "";
@@ -910,22 +1189,21 @@ document.addEventListener("DOMContentLoaded", () => {
       friendlyTip = "\n💡 Nguyên nhân: API Key bị từ chối hoặc hết hạn. Vui lòng kiểm tra lại API Key trong mục 'Cấu hình AI'.";
     }
 
-    appendTerminal("system", "LỖI", `❌ Quá trình phân tích thất bại:\n${errorMsg}${friendlyTip}`);
-    alert(`❌ LỖI PHÂN TÍCH:\n\n${errorMsg}${friendlyTip ? "\n" + friendlyTip : ""}`);
+    appendTerminal("system", isCancelled ? "HỦY" : "LỖI", isCancelled ? "Phiên phân tích đã được hủy bởi người dùng." : `❌ Quá trình phân tích thất bại:\n${errorMsg}${friendlyTip}`);
+    if (!isCancelled) {
+      alert(`❌ LỖI PHÂN TÍCH:\n\n${errorMsg}${friendlyTip ? "\n" + friendlyTip : ""}`);
+    }
     if (window.lucide) window.lucide.createIcons();
   }
 
   function finishAnalysis(data) {
     if (!state.isAnalyzing) return;
     state.isAnalyzing = false;
+    window.TradingAccount.refresh().catch(console.warn);
     stopTimer();
 
-    if (state.eventSource) {
-      state.eventSource.close();
-      state.eventSource = null;
-    }
-
-    el.btnStartAnalysis.classList.remove("loading");
+    el.btnStartAnalysis.className = "btn btn-primary btn-run";
+    el.btnStartAnalysis.disabled = false;
     el.btnStartAnalysis.innerHTML = '<i data-lucide="play" class="btn-icon"></i> <span>Bắt Đầu Phân Tích</span>';
     el.systemStatus.className = "status-indicator ready";
     el.systemStatus.querySelector(".status-label").textContent = "Phân tích hoàn tất";
@@ -944,12 +1222,15 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // Update signal badge with full context awareness
     const signal = (data.signal || "HOLD").toUpperCase();
-    const contextReport = state.portfolioDecision || "";
+    if (data.trader_investment_plan) {
+      state.reportsData.trader = data.trader_investment_plan;
+    }
+    state.portfolioDecision = data.final_trade_decision || state.portfolioDecision || "";
+    const contextReport = (state.portfolioDecision || "") + " " + (state.reportsData.trader || "");
     applySignalBadge(signal, contextReport);
 
     // Parse details from reportsData trader or risk
-    state.portfolioDecision = data.final_trade_decision || state.portfolioDecision || "";
-    parseDecisionMetrics();
+    parseDecisionMetrics(state.portfolioDecision, state.reportsData.trader);
 
     // Auto-collapse pipeline visualizer after 1.5s to free up screen real estate for chart and thesis
     setTimeout(() => {
@@ -1022,25 +1303,36 @@ document.addEventListener("DOMContentLoaded", () => {
   function extractSectionValue(content, headingKeywords) {
     if (!content) return "";
     const plain = content.replace(/[*#`]/g, "");
-    const pattern = new RegExp("(?:^|\\n)[ \t-]*(?:" + headingKeywords.join("|") + ")[ \t]*:?[ \t]*(?:\\n[ \t]*)?([^\\n]+)", "i");
+    const pattern = new RegExp("(?:^|\\n)[ \t-]*(?:" + headingKeywords.join("|") + ")[ \t]*:?[ \t]*(?:\\r?\\n[ \t]*)*([^\\r\\n]+)", "i");
     const m = plain.match(pattern);
-    return m ? m[1].trim() : "";
+    if (!m) return "";
+    const val = m[1].trim();
+    if (/^(?:not provided|none|n\/a|null|undefined|không áp dụng|chưa có)\b/i.test(val)) {
+      return "";
+    }
+    return val;
   }
 
   function resetDecisionSummary() {
     for (const key of ["metricEntry", "metricStopLoss", "metricSizing", "pillRatingVal", "pillTargetVal", "pillHorizonVal"]) {
-      el[key].textContent = "--";
+      if (el[key]) el[key].textContent = "--";
     }
-    el.metricEntryLabel.textContent = "Giá Vào Lệnh (Entry)";
-    el.pmPillsBar.style.display = "none";
-    el.signalBadge.className = "signal-badge";
-    el.signalVal.textContent = "CHỜ PHÂN TÍCH";
+    if (el.metricEntryLabel) el.metricEntryLabel.textContent = "Giá Vào Lệnh (Entry)";
+    if (el.metricEntrySub) el.metricEntrySub.textContent = "Khuyến nghị mua";
+    if (el.metricStopLossSub) el.metricStopLossSub.textContent = "Kỷ luật";
+    if (el.pmPillsBar) el.pmPillsBar.style.display = "none";
+    if (el.signalBadge) {
+      el.signalBadge.className = "signal-badge";
+      if (el.signalVal) el.signalVal.textContent = "CHỜ PHÂN TÍCH";
+    }
     renderMarkdown(el.reasoningContent, "");
     updateStopLossPriceLine(null);
   }
 
   function updateCompanyIdentity(symbol) {
     el.metricClosePrice.textContent = "--";
+    if (el.metricPriceChangeTag) el.metricPriceChangeTag.style.display = "none";
+    if (el.livePriceBadge) el.livePriceBadge.style.display = "none";
     if (state.candleSeries) state.candleSeries.setData([]);
     if (state.volumeSeries) state.volumeSeries.setData([]);
     if (state.sma50Series) state.sma50Series.setData([]);
@@ -1054,21 +1346,101 @@ document.addEventListener("DOMContentLoaded", () => {
     }).catch(() => {});
   }
 
-  function parseDecisionMetrics(overrideText = "") {
-    const cleanText = stripThinkingBlock(overrideText || state.portfolioDecision || "");
+  function parseDecisionMetrics(overrideText = "", overrideTraderText = "") {
+    const pmText = stripThinkingBlock(overrideText || state.portfolioDecision || "");
+    const traderText = stripThinkingBlock(overrideTraderText || state.reportsData?.trader || "");
     resetDecisionSummary();
-    const entry = extractSectionValue(cleanText, ["Entry Price", "Vùng mua", "Giá mua"]);
-    const stop = extractSectionValue(cleanText, ["Stop Loss", "Cắt lỗ", "Mức cắt lỗ"]);
-    const sizing = extractSectionValue(cleanText, ["Position Sizing", "Tỷ trọng", "Quy mô vị thế", "Phân bổ vốn"]);
-    el.metricEntry.textContent = formatVNDPrice(entry);
-    el.metricStopLoss.textContent = formatVNDPrice(stop);
-    el.metricSizing.textContent = sizing || "--";
-    if (stop && el.metricStopLoss.textContent !== "--") {
-      updateStopLossPriceLine(Number(el.metricStopLoss.textContent.replace(/[^0-9]/g, "")));
+
+    // 1. Detect stance / signal
+    const combinedContext = (pmText + " " + traderText).trim();
+    let action = extractSectionValue(pmText, ["Action", "Rating"]) || extractSectionValue(traderText, ["Action", "Rating"]);
+    if (!action) {
+      const ratingMatch = pmText.match(/\*\*Rating\*\*[:\s]*([^\n]+)/i);
+      if (ratingMatch) action = ratingMatch[1].replace(/[*#]/g, "").trim();
     }
-    if (cleanText) renderPortfolioManagerThesis(cleanText);
-    const action = extractSectionValue(cleanText, ["Action", "Rating"]);
-    if (action) applySignalBadge(action);
+    const currentSignal = action || (el.signalVal ? el.signalVal.textContent : "HOLD");
+    applySignalBadge(currentSignal, combinedContext);
+
+    const activeSignal = (el.signalVal && el.signalVal.textContent ? el.signalVal.textContent : currentSignal).toUpperCase();
+    const isSellOrTrim = /UNDERWEIGHT|GIẢM TỶ TRỌNG|TRIM|HẠ TỶ TRỌNG|SELL|BÁN/i.test(activeSignal);
+    const isBuy = /OVERWEIGHT|TĂNG TỶ TRỌNG|BUY|MUA/i.test(activeSignal);
+
+    // 2. Extract Entry / Exit level
+    let entryOrExit = "";
+    if (isSellOrTrim) {
+      if (el.metricEntryLabel) el.metricEntryLabel.textContent = "Giá Bán Khuyến Nghị (Exit)";
+      if (el.metricEntrySub) el.metricEntrySub.textContent = "Khuyến nghị bán / Hạ tỷ trọng";
+      // Search for selling / exit price
+      entryOrExit = extractSectionValue(pmText, ["Exit Price", "Giá bán", "Vùng bán", "Giá chốt lời", "Target Exit", "Mức bán", "Target Price", "Price Target", "Giá mục tiêu"])
+                 || extractSectionValue(traderText, ["Exit Price", "Giá bán", "Vùng bán", "Giá chốt lời", "Target Exit", "Mức bán"]);
+      if (!entryOrExit) {
+        const sellMatch = pmText.match(/(?:vùng\s*bán|giá\s*bán|bán\s*(?:tại|quanh|vùng)|chốt\s*lời\s*(?:tại|quanh|vùng)|thoát\s*vị\s*thế\s*tại|exit\s*price|(?:bán|chốt\s*lời)[^0-9\n]{0,30}[0-9% -]+(?:vị\s*thế)?[^0-9\n]{0,20}(?:tại\s*)?vùng(?:\s*giá)?)[^\d\n]{0,30}(\d{1,3}(?:[.,]\d{3})+|\d{4,}(?:\.\d+)?)(?:\s*[-–—]\s*(\d{1,3}(?:[.,]\d{3})+|\d{4,}(?:\.\d+)?))?/i)
+                       || traderText.match(/(?:vùng\s*bán|giá\s*bán|bán\s*(?:tại|quanh|vùng)|chốt\s*lời\s*(?:tại|quanh|vùng)|thoát\s*vị\s*thế\s*tại|exit\s*price|(?:bán|chốt\s*lời)[^0-9\n]{0,30}[0-9% -]+(?:vị\s*thế)?[^0-9\n]{0,20}(?:tại\s*)?vùng(?:\s*giá)?)[^\d\n]{0,30}(\d{1,3}(?:[.,]\d{3})+|\d{4,}(?:\.\d+)?)(?:\s*[-–—]\s*(\d{1,3}(?:[.,]\d{3})+|\d{4,}(?:\.\d+)?))?/i);
+        if (sellMatch) {
+          entryOrExit = sellMatch[2] ? `${sellMatch[1]} - ${sellMatch[2]}` : sellMatch[1];
+        }
+      }
+    } else if (isBuy) {
+      if (el.metricEntryLabel) el.metricEntryLabel.textContent = "Giá Vào Lệnh (Entry)";
+      if (el.metricEntrySub) el.metricEntrySub.textContent = "Khuyến nghị mua";
+      // Search for entry / buy price
+      entryOrExit = extractSectionValue(pmText, ["Entry Price", "Vùng mua", "Giá mua", "Giá vào lệnh", "Mức mua"])
+                 || extractSectionValue(traderText, ["Entry Price", "Vùng mua", "Giá mua", "Giá vào lệnh", "Mức mua"]);
+      if (!entryOrExit) {
+        const buyMatch = pmText.match(/(?:vùng\s*mua|giá\s*mua|mua\s*(?:tại|quanh|vùng)|mở\s*vị\s*thế\s*quanh|entry\s*price|giá\s*vào\s*lệnh)[^\d\n]{0,30}(\d{1,3}(?:[.,]\d{3})+|\d{4,}(?:\.\d+)?)(?:\s*[-–—]\s*(\d{1,3}(?:[.,]\d{3})+|\d{4,}(?:\.\d+)?))?/i)
+                      || pmText.match(/(?:quanh\s*vùng\s*tích\s*lũy|vùng\s*giá)[^\d\n]{0,30}(\d{1,3}(?:[.,]\d{3})+|\d{4,}(?:\.\d+)?)(?:\s*[-–—]\s*(\d{1,3}(?:[.,]\d{3})+|\d{4,}(?:\.\d+)?))?/i)
+                      || traderText.match(/(?:vùng\s*mua|giá\s*mua|mua\s*(?:tại|quanh|vùng)|mở\s*vị\s*thế\s*quanh|entry\s*price|giá\s*vào\s*lệnh)[^\d\n]{0,30}(\d{1,3}(?:[.,]\d{3})+|\d{4,}(?:\.\d+)?)(?:\s*[-–—]\s*(\d{1,3}(?:[.,]\d{3})+|\d{4,}(?:\.\d+)?))?/i);
+        if (buyMatch) {
+          entryOrExit = buyMatch[2] ? `${buyMatch[1]} - ${buyMatch[2]}` : buyMatch[1];
+        }
+      }
+    } else {
+      if (el.metricEntryLabel) el.metricEntryLabel.textContent = "Vùng Theo Dõi / Giá Vốn";
+      if (el.metricEntrySub) el.metricEntrySub.textContent = "Duy trì vị thế";
+      entryOrExit = extractSectionValue(pmText, ["Entry Price", "Vùng mua", "Vùng giá", "Price Target"])
+                 || extractSectionValue(traderText, ["Entry Price", "Vùng mua", "Vùng giá"]);
+    }
+    if (el.metricEntry) el.metricEntry.textContent = formatVNDPrice(entryOrExit);
+
+    // 3. Extract Stop Loss
+    let stop = extractSectionValue(pmText, ["Stop Loss", "Cắt lỗ", "Mức cắt lỗ", "Giá cắt lỗ", "Ngưỡng cắt lỗ"])
+            || extractSectionValue(traderText, ["Stop Loss", "Cắt lỗ", "Mức cắt lỗ", "Giá cắt lỗ", "Ngưỡng cắt lỗ"]);
+    if (!stop) {
+      const stopMatch = pmText.match(/(?:stop\s*loss|cắt\s*lỗ|mức\s*cắt\s*lỗ|giá\s*cắt\s*lỗ|ngưỡng\s*cắt\s*lỗ|cut\s*loss|thủng)[^\d\n]{0,40}(\d{1,3}(?:[.,]\d{3})+|\d{4,}(?:\.\d+)?)/i)
+                     || traderText.match(/(?:stop\s*loss|cắt\s*lỗ|mức\s*cắt\s*lỗ|giá\s*cắt\s*lỗ|ngưỡng\s*cắt\s*lỗ|cut\s*loss|thủng)[^\d\n]{0,40}(\d{1,3}(?:[.,]\d{3})+|\d{4,}(?:\.\d+)?)/i);
+      if (stopMatch) {
+        stop = stopMatch[1];
+      }
+    }
+    if (el.metricStopLoss) el.metricStopLoss.textContent = formatVNDPrice(stop);
+    if (stop && el.metricStopLoss && el.metricStopLoss.textContent !== "--") {
+      const numStop = Number(el.metricStopLoss.textContent.replace(/[^0-9]/g, ""));
+      if (!isNaN(numStop) && numStop > 0) updateStopLossPriceLine(numStop);
+    }
+
+    // 4. Extract Position Sizing
+    let sizing = extractSectionValue(pmText, ["Position Sizing", "Tỷ trọng", "Quy mô vị thế", "Phân bổ vốn", "Tỷ trọng khuyến nghị", "Phân bổ"])
+              || extractSectionValue(traderText, ["Position Sizing", "Tỷ trọng", "Quy mô vị thế", "Phân bổ vốn", "Tỷ trọng khuyến nghị", "Phân bổ"]);
+    if (!sizing) {
+      const sizingMatch = pmText.match(/(?:bán|chốt\s*lời|giảm|hạ|nâng|tăng)\s*(\d{1,2}(?:\s*[-–—]\s*\d{1,2})?\s*%\s*(?:vị\s*thế|danh\s*mục)?)/i)
+                       || pmText.match(/(?:tỷ\s*trọng|phân\s*bổ|vị\s*thế|quy\s*mô)[^\d\n]{0,30}(\d{1,3}(?:\s*[-–—]\s*\d{1,3})?\s*%(?:\s*(?:danh\s*mục|vị\s*thế|vốn|tỷ\s*trọng\s*chuẩn))?)/i)
+                       || traderText.match(/(?:bán|chốt\s*lời|giảm|hạ|nâng|tăng)\s*(\d{1,2}(?:\s*[-–—]\s*\d{1,2})?\s*%\s*(?:vị\s*thế|danh\s*mục)?)/i)
+                       || traderText.match(/(?:tỷ\s*trọng|phân\s*bổ|vị\s*thế|quy\s*mô)[^\d\n]{0,30}(\d{1,3}(?:\s*[-–—]\s*\d{1,3})?\s*%(?:\s*(?:danh\s*mục|vị\s*thế|vốn|tỷ\s*trọng\s*chuẩn))?)/i);
+      if (sizingMatch) {
+        sizing = sizingMatch[0].trim();
+      }
+    }
+    if (el.metricSizing) {
+      if (sizing) {
+        el.metricSizing.title = sizing;
+        el.metricSizing.textContent = sizing;
+      } else {
+        el.metricSizing.title = "";
+        el.metricSizing.textContent = "--";
+      }
+    }
+
+    if (pmText) renderPortfolioManagerThesis(pmText);
   }
 
   // Parse and render formatted sub-cards for Portfolio Manager Thesis
@@ -1096,7 +1468,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const targetField = extractSectionValue(rawText, ["Price Target", "Target Price", "Giá mục tiêu"]);
     const targetMatch = rawText.replace(/[*#]/g, "").match(/(?:mục tiêu(?: chốt lời)?|chốt lời|take profit|target price|price target)[^\d\n]{0,100}(\d{1,3}(?:[.,]\d{3})+|\d{4,}(?:\.\d+)?)(?:\s*[-–—]\s*(\d{1,3}(?:[.,]\d{3})+|\d{4,}(?:\.\d+)?))?/i);
     const targetPrice = formatVNDPrice(targetField || (targetMatch ? targetMatch[1] + (targetMatch[2] ? " - " + targetMatch[2] : "") : ""));
-    const horizon = extractSectionValue(rawText, ["Time Horizon", "Thời hạn"]) || "--";
+    const horizon = extractSectionValue(rawText, ["Time Horizon", "Thời hạn", "Khung thời gian", "Thời gian nắm giữ"]) || "--";
 
     if (el.pmPillsBar) {
       el.pmPillsBar.style.display = "flex";
@@ -1206,7 +1578,7 @@ document.addEventListener("DOMContentLoaded", () => {
       `;
     }
 
-    el.reasoningContent.innerHTML = html;
+    el.reasoningContent.innerHTML = window.DOMPurify ? DOMPurify.sanitize(html) : escapeHtml(html);
     if (window.lucide) window.lucide.createIcons();
   }
 
@@ -1279,7 +1651,7 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
     if (window.marked) {
-      container.innerHTML = marked.parse(markdownText);
+      container.innerHTML = window.DOMPurify ? DOMPurify.sanitize(marked.parse(markdownText)) : escapeHtml(markdownText);
     } else {
       container.textContent = markdownText;
     }
@@ -1326,7 +1698,7 @@ document.addEventListener("DOMContentLoaded", () => {
     el.elapsedTimer.textContent = "00:00";
     clearInterval(state.timerInterval);
     state.timerInterval = setInterval(() => {
-      state.secondsElapsed++;
+      state.secondsElapsed = Math.max(0, Math.floor((Date.now() - state.runStartedAt) / 1000));
       const mins = String(Math.floor(state.secondsElapsed / 60)).padStart(2, "0");
       const secs = String(state.secondsElapsed % 60).padStart(2, "0");
       el.elapsedTimer.textContent = `${mins}:${secs}`;
@@ -1356,7 +1728,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const res = await fetch("/api/history");
       const data = await res.json();
       if (!data.reports || data.reports.length === 0) {
-        el.historyList.innerHTML = '<div class="empty-state">Chưa có báo cáo nào được lưu trong thư mục results/</div>';
+        el.historyList.innerHTML = '<div class="empty-state">Bạn chưa có báo cáo phân tích nào.</div>';
         return;
       }
 
@@ -1366,10 +1738,10 @@ document.addEventListener("DOMContentLoaded", () => {
         div.className = "history-item";
         div.innerHTML = `
           <div class="history-item-left">
-            <span class="history-ticker">${item.ticker}</span>
+            <span class="history-ticker">${escapeHtml(String(item.ticker))}</span>
             <span class="history-date">${formatDateVN(item.trade_date) || "Đã lưu"}</span>
           </div>
-          <span class="history-badge">${item.signal || item.id}</span>
+          <span class="history-badge">${escapeHtml(String(item.signal || item.id))}</span>
         `;
         div.addEventListener("click", () => {
           el.historyModal.classList.remove("open");
@@ -1378,7 +1750,7 @@ document.addEventListener("DOMContentLoaded", () => {
         el.historyList.appendChild(div);
       });
     } catch (e) {
-      el.historyList.innerHTML = `<div class="empty-state">Lỗi tải danh sách: ${e.message}</div>`;
+      el.historyList.innerHTML = `<div class="empty-state">Lỗi tải danh sách: ${escapeHtml(e.message)}</div>`;
     }
   }
 
@@ -1464,7 +1836,7 @@ document.addEventListener("DOMContentLoaded", () => {
         state.portfolioDecision = thesisSource;
 
         // Parse metrics for decision boxes (format VNĐ, Stop Loss, Position Sizing, Target Exit Range)
-        parseDecisionMetrics(thesisSource);
+        parseDecisionMetrics(thesisSource, d.trader_investment_plan || "");
 
         if (thesisSource) {
           renderPortfolioManagerThesis(stripThinkingBlock(thesisSource));

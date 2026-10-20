@@ -258,8 +258,20 @@ class PortfolioDecision(BaseModel):
         default=None,
         description="Optional recommended holding period, e.g. '3-6 months'.",
     )
+    entry_price: float | None = Field(
+        default=None,
+        description="Optional entry price or buy range as an absolute number in quote currency.",
+    )
+    stop_loss: float | None = Field(
+        default=None,
+        description="Optional stop-loss level as an absolute price in quote currency.",
+    )
+    position_sizing: str | None = Field(
+        default=None,
+        description="Optional recommended allocation or sizing, e.g. '10-15%' or 'bán 30-40%'.",
+    )
 
-    @field_validator("price_target", mode="before")
+    @field_validator("price_target", "entry_price", "stop_loss", mode="before")
     @classmethod
     def _nullish_float_to_none(cls, v):
         return _coerce_optional_float(v)
@@ -285,6 +297,12 @@ def render_pm_decision(decision: PortfolioDecision) -> str:
     target = decision.price_target if decision.price_target is not None else "not provided"
     parts.extend(["", f"**Price Target**: {target}"])
     parts.extend(["", f"**Time Horizon**: {decision.time_horizon or 'not provided'}"])
+    if decision.entry_price is not None:
+        parts.extend(["", f"**Entry Price**: {decision.entry_price}"])
+    if decision.stop_loss is not None:
+        parts.extend(["", f"**Stop Loss**: {decision.stop_loss}"])
+    if decision.position_sizing:
+        parts.extend(["", f"**Position Sizing**: {decision.position_sizing}"])
     return "\n".join(parts)
 
 

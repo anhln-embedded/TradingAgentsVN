@@ -7,24 +7,159 @@ Provides endpoints for:
 - Real-time SSE streaming for running analyses
 """
 
-import json
 import logging
-from datetime import datetime
-from pathlib import Path
+import time
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import JSONResponse
-from sse_starlette.sse import EventSourceResponse
+import requests
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from tradingagents.dataflows.vn_stock import clean_vn_symbol, fetch_vn_ohlcv
-from web.api.stream import stream_analysis_events
-from vnapp.settings import reports_dir, git_updates_enabled
-from vnapp.storage import report_folder
-from vnapp.runtime import RUN_LOCK
+from tradingagents.markets.vietnam.calendar import market_session
+from tradingagents.markets.vietnam.registry import get_vn_instrument
+from tradingagents.markets.vietnam.rules import calculate_price_band
+from vnapp.settings import git_updates_enabled
+from vnapp.accounts import require_admin
+from vnapp.database import jobs, system_lock, transaction
+from sqlalchemy import select
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
+
+_QUOTE_CACHE = {}
+
+
+def get_live_quote(clean_sym: str) -> dict:
+    """Fetch live stock quote from SSI iBoard API with VPS and OHLCV fallbacks."""
+    now = time.time()
+    cached = _QUOTE_CACHE.get(clean_sym)
+    if cached and (now - cached["_time"] < 2.5):
+        return {k: v for k, v in cached.items() if k != "_time"}
+
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    instrument = get_vn_instrument(clean_sym)
+    exchange = instrument.exchange if instrument else None
+
+    def band_values(reference: float) -> tuple[float | None, float | None]:
+        if not exchange or not reference:
+            return None, None
+        band = calculate_price_band(reference, exchange)
+        return band.ceiling, band.floor
+
+    # 1. Primary: SSI iBoard real-time query
+    try:
+        r = requests.get(f"https://iboard-query.ssi.com.vn/stock/{clean_sym}", timeout=3, headers=headers)
+        if r.status_code == 200:
+            d = r.json().get("data", {})
+            price = d.get("matchedPrice") or d.get("priorClosePrice") or d.get("refPrice")
+            ref = d.get("refPrice") or price
+            if price:
+                chg = d.get("priceChange") if d.get("priceChange") is not None else (price - ref)
+                pct = d.get("priceChangePercent") if d.get("priceChangePercent") is not None else (round((price - ref) / ref * 100, 2) if ref else 0.0)
+                ceiling, floor = band_values(float(ref))
+                res = {
+                    "symbol": clean_sym,
+                    "price": float(price),
+                    "ref_price": float(ref),
+                    "change": float(chg),
+                    "change_percent": float(pct),
+                    "open": float(d.get("openPrice") or ref),
+                    "high": float(d.get("highest") or price),
+                    "low": float(d.get("lowest") or price),
+                    "ceiling": float(d["ceiling"]) if d.get("ceiling") is not None else ceiling,
+                    "floor": float(d["floor"]) if d.get("floor") is not None else floor,
+                    "volume": int(d.get("nmTotalTradedQty") or d.get("totalVolume") or 0),
+                    "source": "SSI",
+                    "exchange": exchange,
+                    "timestamp": now,
+                }
+                _QUOTE_CACHE[clean_sym] = {**res, "_time": now}
+                return res
+    except Exception as e:
+        logger.debug(f"SSI quote error: {e}")
+
+    # 2. Secondary: VPS Datafeed
+    try:
+        r = requests.get(f"https://bgapidatafeed.vps.com.vn/getliststockdata/{clean_sym}", timeout=3, headers=headers)
+        if r.status_code == 200:
+            items = r.json()
+            if isinstance(items, list) and items:
+                it = items[0]
+                price = float(it.get("lastPrice") or it.get("r") or 0) * 1000
+                ref = float(it.get("r") or (price / 1000)) * 1000
+                chg = float(it.get("ot") or 0) * 1000
+                pct = round((price - ref) / ref * 100, 2) if ref else 0.0
+                ceiling, floor = band_values(ref)
+                res = {
+                    "symbol": clean_sym,
+                    "price": price,
+                    "ref_price": ref,
+                    "change": chg,
+                    "change_percent": pct,
+                    "open": float(it.get("open") or it.get("r") or 0) * 1000,
+                    "high": float(it.get("h") or (price / 1000)) * 1000,
+                    "low": float(it.get("l") or (price / 1000)) * 1000,
+                    "ceiling": float(it["c"]) * 1000 if it.get("c") is not None else ceiling,
+                    "floor": float(it["f"]) * 1000 if it.get("f") is not None else floor,
+                    "volume": int(it.get("lot") or 0),
+                    "source": "VPS",
+                    "exchange": exchange,
+                    "timestamp": now,
+                }
+                _QUOTE_CACHE[clean_sym] = {**res, "_time": now}
+                return res
+    except Exception as e:
+        logger.debug(f"VPS quote error: {e}")
+
+    # 3. Fallback: Local/Cached OHLCV
+    try:
+        df = fetch_vn_ohlcv(clean_sym, count_back=5)
+        if not df.empty:
+            last = df.iloc[-1]
+            prev = df.iloc[-2] if len(df) > 1 else last
+            price = float(last["Close"])
+            ref = float(prev["Close"])
+            chg = price - ref
+            pct = round(chg / ref * 100, 2) if ref else 0.0
+            ceiling, floor = band_values(ref)
+            res = {
+                "symbol": clean_sym,
+                "price": price,
+                "ref_price": ref,
+                "change": chg,
+                "change_percent": pct,
+                "open": float(last["Open"]),
+                "high": float(last["High"]),
+                "low": float(last["Low"]),
+                "ceiling": ceiling,
+                "floor": floor,
+                "volume": int(last["Volume"]),
+                "source": df.attrs.get("source", "OHLCV"),
+                "exchange": exchange,
+                "timestamp": now,
+            }
+            _QUOTE_CACHE[clean_sym] = {**res, "_time": now}
+            return res
+    except Exception as e:
+        logger.error(f"Quote fallback error: {e}")
+
+    raise HTTPException(status_code=404, detail=f"Không thể lấy giá trực tuyến cho mã {clean_sym}")
+
+
+@router.get("/quote/{ticker}")
+def get_quote(ticker: str, request: Request):
+    """Return real-time quote for a Vietnamese stock ticker."""
+    clean_sym = clean_vn_symbol(ticker)
+    return get_live_quote(clean_sym)
+
+
+@router.get("/market-session/{ticker}")
+def get_market_session(ticker: str):
+    instrument = get_vn_instrument(clean_vn_symbol(ticker))
+    if instrument is None:
+        return market_session("UNKNOWN")
+    return market_session(instrument.exchange)
+
 
 # Curated list of prominent Vietnamese stocks for quick-selection
 POPULAR_VN_TICKERS = [
@@ -50,7 +185,7 @@ POPULAR_VN_TICKERS = [
 
 @router.get("/health")
 def health_check():
-    return {"status": "ok", "app": "TradingAgentsVN Web API", "time": datetime.now().isoformat(), "analysis_running": RUN_LOCK.locked()}
+    return {"status": "ok", "app": "TradingAgentsVN Web API"}
 
 
 @router.get("/tickers")
@@ -61,11 +196,13 @@ def get_tickers():
 @router.get("/market-data/{ticker}")
 def get_market_data(
     ticker: str,
-    count: int = 150,
+    request: Request,
+    count: int = Query(150, ge=1, le=700),
     end_date: Optional[str] = None,
     timeframe: str = Query("1D", description="Khung thời gian nến: 1D (Ngày), 1W (Tuần), 1M (Tháng)"),
 ):
     """Return OHLCV candles formatted for TradingView Lightweight Charts (supports 1D, 1W, 1M)."""
+    request.app.state.accounts.throttle("market:" + request.state.user["id"], limit=60, seconds=60)
     import pandas as pd
     clean_sym = clean_vn_symbol(ticker)
     tf = timeframe.upper().strip()
@@ -78,6 +215,7 @@ def get_market_data(
 
     try:
         df = fetch_vn_ohlcv(clean_sym, count_back=fetch_count, end_date=end_date)
+        data_source = df.attrs.get("source", "unknown")
         if df.empty:
             raise HTTPException(status_code=404, detail=f"Không tìm thấy dữ liệu giá cho {clean_sym}")
 
@@ -130,228 +268,77 @@ def get_market_data(
             })
         return {
             "symbol": clean_sym,
+            "exchange": (get_vn_instrument(clean_sym).exchange
+                         if get_vn_instrument(clean_sym) else None),
+            "source": data_source,
+            "currency": "VND",
             "timeframe": tf,
             "count": len(candles),
             "candles": candles,
             "latest_price": candles[-1]["close"] if candles else None,
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.warning(f"Error fetching candles for {clean_sym} ({tf}): {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 
-@router.get("/history")
-def get_report_history():
-    """Scan and list past analysis reports from results directory."""
-    results_dir = reports_dir()
-    if not results_dir.exists():
-        return {"reports": []}
-
-    reports = []
-
-    # 1. Check custom analysis folders (e.g. bsr_analysis, plx_analysis)
-    for folder in results_dir.glob("*_analysis"):
-        state_file = folder / "final_state.json"
-        if state_file.exists():
-            try:
-                with open(state_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    ticker = data.get("company_of_interest", folder.name.replace("_analysis", "").upper())
-                    trade_date = data.get("trade_date", "")
-                    signal = "UNDERWEIGHT" if "UNDERWEIGHT" in str(data) else "BUY"
-                    reports.append({
-                        "id": folder.name,
-                        "ticker": ticker,
-                        "trade_date": trade_date,
-                        "signal": signal,
-                        "source": "analysis_dir",
-                        "saved_at": state_file.stat().st_mtime,
-                        "folder": str(folder),
-                    })
-            except Exception as e:
-                logger.warning(f"Failed to parse {state_file}: {e}")
-
-    # 2. Check results/reports/
-    reports_dir = results_dir / "reports"
-    if reports_dir.exists():
-        for sub in sorted(reports_dir.iterdir(), reverse=True):
-            if sub.is_dir() and (sub / "complete_report.md").exists():
-                name_parts = sub.name.split("_")
-                ticker = name_parts[0] if name_parts else sub.name
-                reports.append({
-                    "id": f"report_{sub.name}",
-                    "ticker": ticker,
-                    "trade_date": "_".join(name_parts[1:]) if len(name_parts) > 1 else "",
-                    "signal": "COMPLETED",
-                    "source": "reports_dir",
-                    "saved_at": (sub / "complete_report.md").stat().st_mtime,
-                    "folder": str(sub),
-                })
-
-    reports.sort(key=lambda item: item["saved_at"], reverse=True)
-    return {"reports": reports}
-
-
-@router.get("/history/{report_id}")
-def get_report_detail(report_id: str):
-    """Retrieve full content of a historical report."""
-    results_dir = reports_dir()
-
-    try:
-        target_folder = report_folder(report_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Đường dẫn báo cáo không hợp lệ")
-
-    if not target_folder.exists():
-        raise HTTPException(status_code=404, detail="Không tìm thấy báo cáo yêu cầu")
-
-    # Try loading final_state.json
-    state_file = target_folder / "final_state.json"
-    if state_file.exists():
-        try:
-            with open(state_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                import ast
-                for k in ["investment_debate_state", "risk_debate_state"]:
-                    val = data.get(k)
-                    if isinstance(val, str):
-                        try:
-                            data[k] = ast.literal_eval(val)
-                        except Exception:
-                            try:
-                                data[k] = json.loads(val)
-                            except Exception:
-                                pass
-                return {"id": report_id, "type": "json_state", "data": data}
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Lỗi đọc file final_state.json: {e}")
-
-    # Try loading complete_report.md
-    report_file = target_folder / "complete_report.md"
-    if report_file.exists():
-        def read_section(relative_path):
-            path = target_folder / relative_path
-            return path.read_text(encoding="utf-8") if path.exists() else ""
-
-        content = report_file.read_text(encoding="utf-8")
-        import re
-        ticker_match = re.search(r"^# Trading Analysis Report: (\S+)", content)
-        decision = read_section("5_portfolio/decision.md")
-        if not decision:
-            match = re.search(r"^## V\. Portfolio Manager Decision\s*\n(?:### Portfolio Manager\s*\n)?([\s\S]*)", content, re.MULTILINE)
-            decision = match.group(1).strip() if match else ""
-        data = {
-            "company_of_interest": ticker_match.group(1) if ticker_match else target_folder.name.split("_")[0],
-            "trade_date": "",
-            "final_trade_decision": decision,
-            "trader_investment_plan": read_section("3_trading/trader.md"),
-            "investment_debate_state": {
-                "bull_history": read_section("2_research/bull.md"),
-                "bear_history": read_section("2_research/bear.md"),
-                "judge_decision": read_section("2_research/manager.md"),
-            },
-            "risk_debate_state": {
-                "aggressive_history": read_section("4_risk/aggressive.md"),
-                "conservative_history": read_section("4_risk/conservative.md"),
-                "neutral_history": read_section("4_risk/neutral.md"),
-                "judge_decision": decision,
-            },
-        }
-        for section in ("market", "sentiment", "news", "fundamentals"):
-            data[f"{section}_report"] = read_section(f"1_analysts/{section}.md")
-        return {"id": report_id, "type": "json_state", "data": data}
-
-    raise HTTPException(status_code=404, detail="Không tìm thấy nội dung báo cáo trong thư mục")
-
-
-@router.get("/analyze/stream")
-async def analyze_stream(
-    ticker: str = Query(..., description="Mã chứng khoán (VD: VNM, BSR, FPT)"),
-    trade_date: Optional[str] = Query(None, description="Ngày giao dịch (YYYY-MM-DD)"),
-    analysts: str = Query("market,social,news,fundamentals", description="Danh sách chuyên gia phân tích"),
-):
-    """SSE endpoint streaming live agent thought process, debates, and final reports."""
-    clean_sym = clean_vn_symbol(ticker)
-    date_str = trade_date or datetime.now().strftime("%Y-%m-%d")
-
-    # Map aliases like 'sentiment' -> 'social'
-    analyst_key_map = {
-        "sentiment": "social",
-        "social": "social",
-        "market": "market",
-        "news": "news",
-        "fundamentals": "fundamentals",
-    }
-    raw_list = [a.strip().lower() for a in analysts.split(",") if a.strip()]
-    analyst_list = []
-    for a in raw_list:
-        mapped = analyst_key_map.get(a, a)
-        if mapped not in analyst_list:
-            analyst_list.append(mapped)
-
-    if not analyst_list:
-        analyst_list = ["market", "social", "news", "fundamentals"]
-
-    try:
-        events = stream_analysis_events(clean_sym, date_str, tuple(analyst_list))
-    except RuntimeError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-    async def event_generator():
-        async for event_item in events:
-            yield {
-                "event": event_item.get("event", "message"),
-                "data": json.dumps(event_item.get("data", {}), ensure_ascii=False),
-            }
-
-    return EventSourceResponse(event_generator())
-
-
 # =========================================================================
 # AI Provider & Configuration Endpoints
 # =========================================================================
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, ConfigDict
 from web.api.config_helper import get_current_ai_config, update_ai_config
 from web.api.git_helper import check_upstream_status, pull_upstream_code
 
 
 class ConfigUpdateRequest(BaseModel):
-    provider: str
-    api_key: Optional[str] = None
-    deep_think_llm: Optional[str] = None
-    quick_think_llm: Optional[str] = None
-    backend_url: Optional[str] = None
-    llm_timeout: Optional[float] = None
-    llm_max_retries: Optional[int] = None
+    model_config = ConfigDict(extra="forbid")
+    provider: str = Field(min_length=1, max_length=50)
+    api_key: Optional[str] = Field(None, max_length=4096)
+    deep_think_llm: Optional[str] = Field(None, max_length=200)
+    quick_think_llm: Optional[str] = Field(None, max_length=200)
+    backend_url: Optional[str] = Field(None, max_length=2048)
+    llm_timeout: Optional[float] = Field(None, gt=0, le=600, allow_inf_nan=False)
+    llm_max_retries: Optional[int] = Field(None, ge=0, le=10, strict=True)
 
 
 @router.get("/config")
-def get_config():
+def get_config(request: Request):
+    require_admin(request.state.user)
     """Retrieve current LLM provider, models, and masked API key."""
     return get_current_ai_config()
 
 
 @router.post("/config")
-def update_config(payload: ConfigUpdateRequest):
-    """Save new LLM provider, API key, and model settings to .env and runtime."""
-    if RUN_LOCK.locked():
-        raise HTTPException(status_code=409, detail="Chờ phiên phân tích hoàn tất trước khi đổi cấu hình")
-    try:
-        updated = update_ai_config(
-            provider=payload.provider,
-            api_key=payload.api_key,
-            deep_think_llm=payload.deep_think_llm,
-            quick_think_llm=payload.quick_think_llm,
-            backend_url=payload.backend_url,
-            llm_timeout=payload.llm_timeout,
-            llm_max_retries=payload.llm_max_retries,
-        )
-        return {"success": True, "message": "Đã cập nhật cấu hình thành công!", "config": updated}
-    except Exception as e:
-        logger.exception("Error updating config: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
+def update_config(payload: ConfigUpdateRequest, request: Request):
+    require_admin(request.state.user)
+    from web.api.config_helper import PROVIDER_METADATA
+    if payload.provider not in PROVIDER_METADATA:
+        raise HTTPException(422, "Nhà cung cấp không hợp lệ.")
+    if payload.backend_url:
+        from urllib.parse import urlparse
+        parsed = urlparse(payload.backend_url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            raise HTTPException(422, "Backend URL phải là HTTP/HTTPS.")
+    with transaction(request.app.state.jobs.engine) as connection:
+        connection.execute(select(system_lock).where(system_lock.c.id == "server").with_for_update()).first()
+        if connection.execute(select(jobs.c.id).where(jobs.c.status.in_(("queued", "running"))).limit(1)).first():
+            raise HTTPException(409, "Chờ các phiên phân tích kết thúc trước khi đổi cấu hình.")
+        try:
+            updated = update_ai_config(**payload.model_dump())
+            request.app.state.accounts._audit(connection, request.state.user, "server.config.update", "server",
+                {"provider": payload.provider, "key_changed": bool(payload.api_key),
+                 "deep_think_llm": payload.deep_think_llm, "quick_think_llm": payload.quick_think_llm,
+                 "llm_timeout": payload.llm_timeout, "llm_max_retries": payload.llm_max_retries})
+            return {"success": True, "message": "Đã cập nhật cấu hình.", "config": updated}
+        except HTTPException:
+            raise
+        except Exception:
+            logger.exception("Server configuration update failed")
+            raise HTTPException(500, "Không thể lưu cấu hình server.") from None
 
 
 # =========================================================================
@@ -359,7 +346,8 @@ def update_config(payload: ConfigUpdateRequest):
 # =========================================================================
 
 @router.get("/git/status")
-def get_git_status():
+def get_git_status(request: Request):
+    require_admin(request.state.user)
     """Fetch and return upstream update status."""
     if not git_updates_enabled():
         return {"disabled": True, "message": "Cập nhật bằng image đã kiểm thử; Git bị tắt trên server."}
@@ -367,11 +355,11 @@ def get_git_status():
 
 
 @router.post("/git/pull")
-def pull_upstream():
+def pull_upstream(request: Request):
+    require_admin(request.state.user)
     """Prepare an upstream candidate outside the running checkout."""
     if not git_updates_enabled():
         raise HTTPException(status_code=403, detail="Không merge mã nguồn trên server production")
-    if RUN_LOCK.locked():
-        raise HTTPException(status_code=409, detail="Đang phân tích; chưa thể cập nhật")
     result = pull_upstream_code()
+    request.app.state.accounts.record_admin_action(request.state.user, "server.upstream.prepare", {"success": result.get("success", False)})
     return result

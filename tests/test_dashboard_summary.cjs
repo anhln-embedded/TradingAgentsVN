@@ -32,6 +32,7 @@ context.resetReportData = () => {context.state.viewRequest = (context.state.view
 context.resetAgentNodes = () => {};
 context.updateCompanyIdentity = () => {};
 context.loadMarketChart = () => {};
+context.fetchLiveQuote = () => {};
 context.document = {querySelectorAll: () => []};
 let loaded = [];
 context.loadPreExistingReport = async (id, updateDate) => loaded.push([id, updateDate]);

@@ -27,6 +27,7 @@ WORKDIR /app
 COPY --chown=appuser:appuser tradingagents ./tradingagents
 COPY --chown=appuser:appuser vnapp ./vnapp
 COPY --chown=appuser:appuser web ./web
+COPY --chown=appuser:appuser tools/manage_accounts.py ./tools/manage_accounts.py
 USER appuser
 EXPOSE 8000
 CMD ["uvicorn", "web.api.server:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--timeout-graceful-shutdown", "300", "--no-server-header"]
