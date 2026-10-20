@@ -62,6 +62,25 @@ Operator recovery:
 
 ## Production
 
+### Ubuntu one-command installer
+
+After the repository has been cloned and DNS points at the server, run:
+
+```text
+sudo bash deploy/ubuntu-one-click.sh
+```
+
+The interactive installer installs Docker/Nginx/Certbot, generates database and
+SSI encryption secrets, writes `deploy/.env` with mode `600`, builds the stack,
+obtains a Let's Encrypt certificate, bootstraps the superadmin, then removes the
+bootstrap password from the environment file. It prints the generated admin
+password once. It never asks for an SSI password or OTP; SSI is connected later
+by the superadmin through the official OAuth page.
+
+For scripted provisioning, pre-set `DEPLOY_DOMAIN`, `LETSENCRYPT_EMAIL`,
+`ADMIN_EMAIL`, `LLM_PROVIDER`, `DEEP_MODEL`, `QUICK_MODEL`, `LLM_BACKEND_URL`,
+and `LLM_API_KEY` before invoking the same command.
+
 Copy `deploy/.env.example` to `deploy/.env`; fill in the database password,
 bootstrap password, AI credentials and the public HTTPS origin. Use a random
 hexadecimal database password so it is also safe in the database URL. Keep all
