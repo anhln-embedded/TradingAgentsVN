@@ -30,6 +30,7 @@ _COMMON_US_3_LETTER = frozenset({
     "SPY", "QQQ", "DIA", "IWM", "GLD", "SLV", "XLE", "XLF", "XLK", "XLV",
     "XLI", "XLY", "XLP", "XLU", "XLB", "USO", "UNG", "TLT", "EEM", "VXX",
     "BTC", "ETH", "SOL", "XRP", "DOG", "LTC", "BNB", "ADA", "DOT", "AVX",
+    "COF",
 })
 
 _VN_EXCHANGE_PRICE_LIMITS = {

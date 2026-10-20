@@ -22,5 +22,3 @@ trade_date = datetime.now().strftime("%Y-%m-%d")
 print(f"=== Đang phân tích cổ phiếu VNM theo dữ liệu thị trường ngày: {trade_date} ===")
 _, decision = ta.propagate("VNM", trade_date)
 print(decision)
-
-# Memorize mistakes and reflect

@@ -6,13 +6,15 @@ import re
 
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.graph.trading_graph import TradingAgentsGraph
+from tradingagents.llm_clients import build_llm_kwargs
 
 from vnapp.settings import data_dir, reports_dir
 
 
 class DashboardGraph(TradingAgentsGraph):
     def _get_provider_kwargs(self):
-        kwargs = super()._get_provider_kwargs()
+        # Core v0.7 moved provider argument construction out of TradingAgentsGraph.
+        kwargs = build_llm_kwargs(self.config)
         value = self.config.get("llm_timeout")
         if value is not None and value != "":
             if isinstance(value, bool):
@@ -35,8 +37,12 @@ def build_config():
     for env, key in keys.items():
         if env in os.environ:
             config[key] = os.environ[env]
-    config["llm_timeout"] = float(os.environ.get("TRADINGAGENTS_LLM_TIMEOUT", config.get("llm_timeout") or 60))
-    config["llm_max_retries"] = int(os.environ.get("TRADINGAGENTS_LLM_MAX_RETRIES", config.get("llm_max_retries") if config.get("llm_max_retries") is not None else 4))
+    timeout_value = os.environ.get("TRADINGAGENTS_LLM_TIMEOUT") or config.get("llm_timeout") or 60
+    retries_value = os.environ.get("TRADINGAGENTS_LLM_MAX_RETRIES")
+    if retries_value in (None, ""):
+        retries_value = config.get("llm_max_retries")
+    config["llm_timeout"] = float(timeout_value)
+    config["llm_max_retries"] = int(4 if retries_value in (None, "") else retries_value)
     config["results_dir"] = str(reports_dir())
     if "TA_DATA_DIR" in os.environ:
         config["data_cache_dir"] = str(data_dir() / "cache")

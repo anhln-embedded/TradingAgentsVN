@@ -1,31 +1,20 @@
-"""Sentiment analyst — multi-source sentiment analysis for a target ticker.
+"""Sentiment analyst: one sentiment report from three sources.
 
-Previously named ``social_media_analyst``. Renamed and redesigned because
-the old version had a prompt that demanded social-media analysis but the
-only tool available was Yahoo Finance news — which led LLMs to fabricate
-Reddit/X/StockTwits content under prompt pressure (verified live).
+The node fetches its sources before calling the model and puts them in the
+prompt, so the model reports on data it was given rather than inventing posts:
 
-The redesigned agent pre-fetches three complementary data sources before
-the LLM is invoked and injects them into the prompt as structured blocks:
+  1. News headlines: Yahoo Finance
+  2. StockTwits messages: the cashtag stream, with Bullish/Bearish tags
+  3. Reddit posts: r/wallstreetbets, r/stocks, r/investing, or crypto communities for a crypto pair
 
-  1. News headlines     — Yahoo Finance (institutional framing)
-  2. StockTwits messages — retail-trader posts indexed by cashtag, with
-                           user-labeled Bullish/Bearish sentiment tags
-  3. Reddit posts        — r/wallstreetbets, r/stocks, r/investing
+Each source is trimmed to the analysis window. With a TypeSafe key, the social
+posts are screened by Jev first (see post_screen). These feeds serve recent items
+and are not archived, so a historical run's sentiment inputs are not
+point-in-time.
 
-Each source is trimmed to the analysis window. These text feeds serve recent
-items and are not archived as of a past date, so sentiment inputs for a
-historical run are not guaranteed to be point-in-time.
-
-The agent does not use tool-calling; the data is in the prompt from
-turn 0. Output uses the structured-output pattern (json_schema for
-OpenAI/xAI, response_schema for Gemini, tool-use for Anthropic), falling
-back to free-text generation for providers that lack native support, so
-the sentiment header (band + score + confidence) is deterministic across
-runs and providers instead of free-form per-model prose.
-
-See: https://github.com/TauricResearch/TradingAgents/issues/557
-See: https://github.com/TauricResearch/TradingAgents/issues/796
+The report is a SentimentReport through structured output where the provider
+supports it and free text otherwise, so the band, score and confidence header
+reads the same across providers.
 """
 
 from datetime import datetime, timedelta
@@ -33,19 +22,22 @@ from datetime import datetime, timedelta
 from langchain_core.messages import AIMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
+from tradingagents.agents.context import get_instrument_context_from_state, get_language_instruction
+from tradingagents.agents.post_screen import jev_screen
 from tradingagents.agents.schemas import SentimentReport, render_sentiment_report
-from tradingagents.agents.utils.agent_utils import (
-    get_instrument_context_from_state,
-    get_language_instruction,
-    get_news,
-)
-from tradingagents.agents.utils.structured import (
+from tradingagents.agents.structured import (
     NO_EXTERNAL_TOOLS,
     bind_structured,
     invoke_structured_or_freetext,
 )
-from tradingagents.dataflows.reddit import fetch_reddit_posts
-from tradingagents.dataflows.stocktwits import fetch_stocktwits_messages
+from tradingagents.agents.tools import get_news
+from tradingagents.dataflows.vendors.reddit import (
+    CRYPTO_SUBREDDITS,
+    DEFAULT_SUBREDDITS,
+    fetch_reddit_posts,
+    subreddits_for,
+)
+from tradingagents.dataflows.vendors.stocktwits import fetch_stocktwits_messages
 from tradingagents.dataflows.vn_stock import (
     clean_vn_symbol,
     get_vn_corporate_disclosures,
@@ -77,30 +69,26 @@ def create_sentiment_analyst(llm):
         # returns a string (no exceptions surface from here), so the LLM
         # always sees something — either real data or a clear placeholder.
         news_block = get_news.func(ticker, start_date, end_date)
-
         if is_vn_stock(ticker):
-            clean_sym = clean_vn_symbol(ticker)
-            disclosures_block = get_vn_corporate_disclosures(clean_sym, limit=8)
-            market_sentiment_block = (
-                f"- **Tâm lý Nhà đầu tư Cá nhân ({clean_sym}):** Chiếm ~80-85% thanh khoản. Đang theo dõi sát sao tiến độ chia cổ tức tiền mặt, biến động giá hàng hóa/ngành, và thảo luận sôi nổi trên F319, FireAnt.\n"
-                f"- **Giao dịch Khối Ngoại & Room Ngoại:** Khối ngoại là chỉ báo dòng tiền dẫn dắt. Cần theo dõi tỷ lệ sở hữu và mức độ mua/bán ròng của quỹ ETF ngoại (Fubon, Diamond).\n"
-                f"- **Áp lực Đòn bẩy Margin:** Mức độ dư nợ margin tại các CTCK, rủi ro call margin chéo khi thị trường điều chỉnh."
-            )
-            system_message = _build_vn_sentiment_system_message(
-                ticker=ticker,
+            symbol = clean_vn_symbol(ticker)
+            disclosures = get_vn_corporate_disclosures(symbol, limit=8)
+            system_message = _build_vn_system_message(
+                ticker=symbol,
                 start_date=start_date,
                 end_date=end_date,
                 news_block=news_block,
-                disclosures_block=disclosures_block,
-                market_sentiment_block=market_sentiment_block,
+                disclosures_block=disclosures,
             )
         else:
-            # Pass the analysis window so a historical run trims social posts to it
-            # instead of leaking today's chatter into a backtest (#1220).
+            # Pass the analysis window so a historical run trims social posts to it.
+            screen = jev_screen(ticker)
             stocktwits_block = fetch_stocktwits_messages(
-                ticker, limit=30, start_date=start_date, end_date=end_date
+                ticker, limit=30, start_date=start_date, end_date=end_date, screen=screen
             )
-            reddit_block = fetch_reddit_posts(ticker, start_date=start_date, end_date=end_date)
+            subreddits = subreddits_for(ticker)
+            reddit_block = fetch_reddit_posts(
+                ticker, subreddits, start_date=start_date, end_date=end_date, screen=screen
+            )
             system_message = _build_system_message(
                 ticker=ticker,
                 start_date=start_date,
@@ -108,6 +96,7 @@ def create_sentiment_analyst(llm):
                 news_block=news_block,
                 stocktwits_block=stocktwits_block,
                 reddit_block=reddit_block,
+                subreddits=subreddits,
             )
 
         prompt = ChatPromptTemplate.from_messages(
@@ -152,67 +141,31 @@ def create_sentiment_analyst(llm):
     return sentiment_analyst_node
 
 
-def _build_vn_sentiment_system_message(
-    *,
-    ticker: str,
-    start_date: str,
-    end_date: str,
-    news_block: str,
+def _build_vn_system_message(
+    *, ticker: str, start_date: str, end_date: str, news_block: str,
     disclosures_block: str,
-    market_sentiment_block: str,
 ) -> str:
-    """Assemble the sentiment-analyst system message for Vietnamese equities."""
-    clean_sym = clean_vn_symbol(ticker)
-    return f"""Bạn là Chuyên gia Phân tích Tâm lý & Dòng tiền Thị trường Chứng khoán Việt Nam (Senior Sentiment & Market Flow Analyst).
-Nhiệm vụ của bạn là lập một báo cáo phân tích tâm lý thị trường toàn diện, sâu sắc cho mã cổ phiếu {clean_sym} trong giai đoạn từ {start_date} đến {end_date}, dựa trên 3 nguồn dữ liệu thị trường thực tế đã được thu thập sẵn:
+    """Build a Vietnam-specific prompt without US-only social feeds."""
+    return f"""Bạn là chuyên gia phân tích tâm lý và dòng tiền TTCK Việt Nam.
+Hãy đánh giá mã {ticker} trong giai đoạn {start_date} đến {end_date} chỉ từ dữ liệu đã cung cấp.
 
-## CÁC NGUỒN DỮ LIỆU ĐÃ THU THẬP SẴN (PRE-FETCHED):
-
-### 1. Báo chí Tài chính & Truyền thông Chuyên ngành Việt Nam (CafeF, Vietstock, VnEconomy, Báo Đầu tư...)
-Góc nhìn truyền thông chính thống, phản ánh thông tin vĩ mô, ngành nghề, và các bài viết phân tích từ giới phân tích/chuyên gia.
-
-<start_of_financial_news>
+### Tin tức tài chính trong nước
+<start_of_news>
 {news_block}
-<end_of_financial_news>
+<end_of_news>
 
-### 2. Công bố Thông tin Doanh nghiệp & Nghị quyết HĐQT (UBCKNN, HOSE/HNX, Doanh nghiệp)
-Thông tin chính thống về hoạt động doanh nghiệp: chi trả cổ tức, kết quả kinh doanh, biến động nhân sự cấp cao, dự án lớn và kế hoạch tăng vốn.
-
-<start_of_corporate_disclosures>
+### Công bố thông tin doanh nghiệp
+<start_of_disclosures>
 {disclosures_block}
-<end_of_corporate_disclosures>
+<end_of_disclosures>
 
-### 3. Tâm lý Cộng đồng Nhà đầu tư Cá nhân, Dòng tiền Khối Ngoại & Đòn bẩy Margin
-- Nhà đầu tư cá nhân chiếm ~80-85% thanh khoản toàn thị trường. Tâm lý thị trường thể hiện mạnh qua các diễn đàn chứng khoán lớn (F319, FireAnt) và các hội nhóm Zalo/Facebook.
-- Khối ngoại: Xu hướng mua/bán ròng của nhà đầu tư nước ngoài và các quỹ ETF (Fubon, Diamond, VanEck), tỷ lệ sở hữu và Room ngoại còn lại.
-- Trạng thái đòn bẩy Margin: Mức độ dư nợ margin tại các công ty chứng khoán và rủi ro bán giải chấp chéo khi thị trường biến động.
+Phân tích chiều hướng từng nguồn, điểm đồng thuận/phân kỳ, chủ đề chi phối,
+chất xúc tác và rủi ro. Không viện dẫn Yahoo Finance, StockTwits hay Reddit.
+Lưu ý vai trò của nhà đầu tư cá nhân, khối ngoại/ETF, room ngoại và rủi ro margin,
+nhưng không được bịa số liệu chưa xuất hiện trong dữ liệu.
 
-<start_of_market_sentiment>
-{market_sentiment_block}
-<end_of_market_sentiment>
-
-## HƯỚNG DẪN PHÂN TÍCH TÂM LÝ & DÒNG TIỀN (BEST PRACTICES CHO TTCK VN):
-
-1. **Phân tích theo từng nguồn dữ liệu thực tế:** Đánh giá cụ thể các sự kiện tin tức và công bố thông tin đã thu thập ở trên. Phân tích rõ các sự kiện đó mang tính tích cực (Bullish), tiêu cực (Bearish) hay trung lập đối với triển vọng giá cổ phiếu {clean_sym}. Tuyệt đối không viện dẫn các nguồn tin không liên quan như Yahoo Finance, StockTwits hay Reddit khi phân tích cổ phiếu Việt Nam.
-2. **Phân tích sự đồng thuận hay phân kỳ giữa các nguồn:** Có sự mâu thuẫn giữa thông tin cơ bản/tin tức báo chí với tâm lý dòng tiền trên thị trường không? (Ví dụ: Doanh nghiệp chi trả cổ tức lớn hoặc trúng thầu dự án nhưng khối ngoại bán ròng hoặc thị trường chung đang chịu áp lực điều chỉnh).
-3. **Chủ đề tường thuật chủ đạo (Dominant Narrative Themes):** Yếu tố trọng tâm nào đang chi phối tâm lý và kỳ vọng của nhà đầu tư đối với mã {clean_sym} hiện nay (cổ tức tiền mặt, tiến độ dự án khí/LNG, kết quả kinh doanh quý, chính sách giá khí, chu kỳ ngành dầu khí/năng lượng, hay xu hướng VN-Index)?
-4. **Chất xúc tác ngắn hạn (Catalysts) & Rủi ro tiềm ẩn (Risks):** Liệt kê rõ các yếu tố có thể kích hoạt biến động giá (ngày chốt quyền cổ tức, công bố BCTC, giá hàng hóa thế giới, áp lực margin thị trường chung).
-
-## CÁC TRƯỜNG DỮ LIỆU ĐẦU RA (STRUCTURED OUTPUT):
-
-- **overall_band**: Chọn chính xác một trong các nhãn: Bullish / Mildly Bullish / Neutral / Mixed / Mildly Bearish / Bearish. Dùng Mixed khi các nguồn tin hoặc dòng tiền có sự phân hóa trái chiều; Dùng Neutral khi thông tin hoàn toàn trầm lắng.
-- **overall_score**: Điểm số từ 0 (cực kỳ tiêu cực) đến 10 (cực kỳ tích cực); 5 là trung lập.
-- **confidence**: low / medium / high, dựa trên độ đầy đủ và chất lượng dữ liệu thu thập được.
-- **narrative**: Báo cáo chi tiết bằng tiếng Việt chuyên nghiệp, theo đúng cấu trúc:
-  1. Phân Tích Chi Tiết Từng Nguồn Dữ Liệu:
-     - Báo chí tài chính & Truyền thông (CafeF, Vietstock, VnEconomy)
-     - Công bố thông tin & Nghị quyết HĐQT
-     - Tâm lý cộng đồng nhà đầu tư cá nhân, Khối ngoại & Đòn bẩy Margin
-  2. Phân Tích Sự Phân Kỳ Và Đồng Thuận Giữa Các Nguồn
-  3. Chủ Đề Tường Thuật Chủ Đạo (Dominant Narrative Themes)
-  4. Các Yếu Tố Xúc Tác (Catalysts) Và Rủi Ro Tiềm Ẩn (Risks)
-  5. Bảng Markdown tổng hợp các tín hiệu tâm lý (Chiều hướng, Nguồn tin, Bằng chứng thực tế).
-
+Điền đầy đủ overall_band, overall_score, confidence và narrative theo schema.
+Narrative cần có bảng Markdown tóm tắt tín hiệu và bằng chứng.
 {get_language_instruction()}"""
 
 
@@ -224,8 +177,15 @@ def _build_system_message(
     news_block: str,
     stocktwits_block: str,
     reddit_block: str,
+    subreddits: tuple[str, ...] = DEFAULT_SUBREDDITS,
 ) -> str:
     """Assemble the sentiment-analyst system message with structured data blocks."""
+    if subreddits == DEFAULT_SUBREDDITS:
+        character = "r/wallstreetbets is often contrarian/exuberant; r/stocks more measured; r/investing longer-term"
+    elif len(subreddits) > len(CRYPTO_SUBREDDITS):
+        character = f"r/{subreddits[0]} leans toward the coin's holders; r/CryptoCurrency and r/CryptoMarkets are broader"
+    else:
+        character = "r/CryptoCurrency and r/CryptoMarkets are broad crypto communities"
     return f"""You are a financial market sentiment analyst. Your task is to produce a comprehensive sentiment report for {ticker} covering the period from {start_date} to {end_date}, drawing on three complementary data sources that have already been collected for you.
 
 ## Data sources (pre-fetched, in this prompt)
@@ -244,8 +204,8 @@ Fast-moving signal. Each message carries a user-labeled sentiment tag (Bullish /
 {stocktwits_block}
 <end_of_stocktwits>
 
-### Reddit posts — r/wallstreetbets, r/stocks, r/investing (past 7 days)
-Community discussion, without vote or comment counts. Subreddit character matters (r/wallstreetbets is often contrarian/exuberant; r/stocks more measured; r/investing longer-term).
+### Reddit posts — {", ".join(f"r/{sub}" for sub in subreddits)} (past 7 days)
+Community discussion, without vote or comment counts. Subreddit character matters ({character}).
 
 <start_of_reddit>
 {reddit_block}
@@ -253,7 +213,7 @@ Community discussion, without vote or comment counts. Subreddit character matter
 
 ## How to analyze this data (best practices)
 
-1. **Read the StockTwits Bullish/Bearish ratio as a leading retail-sentiment signal.** A 70/30 bullish/bearish split is moderately bullish; ≥90/10 may indicate over-extension and contrarian risk; 50/50 is uncertainty. Sample size matters — base rates on the actual message count, not percentages alone.
+1. **Read the StockTwits Bullish/Bearish ratio as a leading retail-sentiment signal.** A 70/30 bullish/bearish split is moderately bullish; ≥90/10 may indicate over-extension and contrarian risk; 50/50 is uncertainty. Sample size matters — base rates on the actual message count, not percentages alone. A block headed "Screened by Jev" has had off-topic posts removed; its stance count is a classifier's read of every on-topic post fetched, labelled or not, of which the posts listed are a sample. Read it alongside the user tags.
 
 2. **Look for cross-source divergences.** If news framing is bearish but StockTwits is overwhelmingly bullish, that mismatch is itself a signal — it can mean retail is leaning into a thesis the news flow hasn't caught up to (or vice versa, that retail is chasing while institutions are cautious).
 
@@ -279,25 +239,3 @@ Fill the following fields:
 - **narrative**: Full source-by-source breakdown, divergences, dominant narrative themes, catalysts and risks, and a markdown summary table of key sentiment signals (direction, source, supporting evidence).
 
 {get_language_instruction()}"""
-
-
-# ---------------------------------------------------------------------------
-# Backwards-compatibility shim
-# ---------------------------------------------------------------------------
-def create_social_media_analyst(llm):
-    """Deprecated alias for :func:`create_sentiment_analyst`.
-
-    Kept so existing code that imports ``create_social_media_analyst``
-    continues to work.
-
-    .. deprecated::
-        Import :func:`create_sentiment_analyst` directly instead.
-    """
-    import warnings
-    warnings.warn(
-        "create_social_media_analyst is deprecated and will be removed in a "
-        "future version. Use create_sentiment_analyst instead.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    return create_sentiment_analyst(llm)
