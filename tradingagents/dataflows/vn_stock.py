@@ -22,6 +22,7 @@ from stockstats import wrap
 from urllib3.util.retry import Retry
 
 from .errors import NoMarketDataError
+from .ssi_mcp import fetch_ssi_ohlcv
 
 logger = logging.getLogger(__name__)
 
@@ -240,13 +241,28 @@ def _fetch_dnse_ohlcv(clean_sym: str, count_back: int, end_date: Optional[str]) 
 
 
 def fetch_vn_ohlcv(symbol: str, count_back: int = 350, end_date: Optional[str] = None) -> pd.DataFrame:
-    """Direct high-speed REST fetcher for Vietnamese stock OHLCV history with multi-provider fallback and caching."""
+    """Fetch VN OHLCV from SSI MCP, with Vietcap and DNSE fallbacks."""
     clean_sym = clean_vn_symbol(symbol)
     cache_key = f"{clean_sym}:{count_back}:{end_date}"
     if cache_key in _OHLCV_CACHE:
         return _OHLCV_CACHE[cache_key].copy()
 
-    # 1. Try Vietcap primary endpoint
+    # 1. SSI is the official primary source. Missing/expired OAuth credentials,
+    # historical requests outside its 730-day window, and transient failures
+    # all degrade to the existing public fallbacks.
+    try:
+        df = fetch_ssi_ohlcv(clean_sym, count_back, end_date)
+        if not df.empty:
+            _OHLCV_CACHE[cache_key] = df
+            return df.copy()
+    except Exception as e_ssi:
+        logger.warning(
+            "SSI MCP không khả dụng (%s), chuyển sang Vietcap cho %s...",
+            e_ssi,
+            clean_sym,
+        )
+
+    # 2. Try Vietcap fallback endpoint
     try:
         df = _fetch_vietcap_ohlcv(clean_sym, count_back, end_date)
         if not df.empty:
@@ -255,7 +271,7 @@ def fetch_vn_ohlcv(symbol: str, count_back: int = 350, end_date: Optional[str] =
     except Exception as e_vc:
         logger.warning(f"Vietcap API lỗi ({e_vc}), tự động chuyển sang nguồn dự phòng DNSE Entrade cho {clean_sym}...")
 
-    # 2. Try DNSE Entrade fallback endpoint
+    # 3. Try DNSE Entrade fallback endpoint
     try:
         df = _fetch_dnse_ohlcv(clean_sym, count_back, end_date)
         if not df.empty:
