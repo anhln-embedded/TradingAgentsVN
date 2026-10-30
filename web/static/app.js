@@ -1243,21 +1243,75 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   function applySignalBadge(signal, contextText = "") {
     el.signalBadge.className = "signal-badge";
-    const combined = (signal + " " + contextText).toUpperCase();
+    const sig = (signal || "").trim().toUpperCase();
 
-    // Underweight / Trim (Amber Warning #F59E0B)
-    if (/UNDERWEIGHT|GIẢM TỶ TRỌNG|TRIM|HẠ TỶ TRỌNG/i.test(combined)) {
+    // Priority 1: Check explicit signal parameter first
+    if (/UNDERWEIGHT|GIẢM TỶ TRỌNG|TRIM|HẠ TỶ TRỌNG/i.test(sig)) {
       el.signalBadge.classList.add("trim");
       el.signalVal.textContent = "GIẢM TỶ TRỌNG";
-    } else if (/OVERWEIGHT|TĂNG TỶ TRỌNG/i.test(combined)) {
+      return;
+    }
+    if (/OVERWEIGHT|TĂNG TỶ TRỌNG/i.test(sig)) {
       el.signalBadge.classList.add("buy");
       el.signalVal.textContent = "TĂNG TỶ TRỌNG";
-    } else if (/BUY|MUA/i.test(combined)) {
-      el.signalBadge.classList.add("buy");
-      el.signalVal.textContent = "MUA (BUY)";
-    } else if (/SELL|BÁN/i.test(combined)) {
+      return;
+    }
+    if (/SELL|BÁN/i.test(sig)) {
       el.signalBadge.classList.add("sell");
       el.signalVal.textContent = "BÁN (SELL)";
+      return;
+    }
+    if (/BUY|MUA/i.test(sig)) {
+      el.signalBadge.classList.add("buy");
+      el.signalVal.textContent = "MUA (BUY)";
+      return;
+    }
+    if (/HOLD|NẮM GIỮ/i.test(sig)) {
+      el.signalBadge.classList.add("hold");
+      el.signalVal.textContent = "NẮM GIỮ (HOLD)";
+      return;
+    }
+
+    // Priority 2: Extract explicit Rating / Action from contextText if signal is empty/ambiguous
+    const explicitAction = extractSectionValue(contextText, ["Action", "Rating"]);
+    if (explicitAction) {
+      const act = explicitAction.trim().toUpperCase();
+      if (/UNDERWEIGHT|GIẢM TỶ TRỌNG|TRIM|HẠ TỶ TRỌNG/i.test(act)) {
+        el.signalBadge.classList.add("trim");
+        el.signalVal.textContent = "GIẢM TỶ TRỌNG";
+        return;
+      }
+      if (/OVERWEIGHT|TĂNG TỶ TRỌNG/i.test(act)) {
+        el.signalBadge.classList.add("buy");
+        el.signalVal.textContent = "TĂNG TỶ TRỌNG";
+        return;
+      }
+      if (/SELL|BÁN/i.test(act)) {
+        el.signalBadge.classList.add("sell");
+        el.signalVal.textContent = "BÁN (SELL)";
+        return;
+      }
+      if (/BUY|MUA/i.test(act)) {
+        el.signalBadge.classList.add("buy");
+        el.signalVal.textContent = "MUA (BUY)";
+        return;
+      }
+    }
+
+    // Priority 3: Fallback semantic scan on contextText with strict word boundaries
+    const context = (contextText || "").toUpperCase();
+    if (/UNDERWEIGHT|GIẢM TỶ TRỌNG|HẠ TỶ TRỌNG/i.test(context)) {
+      el.signalBadge.classList.add("trim");
+      el.signalVal.textContent = "GIẢM TỶ TRỌNG";
+    } else if (/OVERWEIGHT|TĂNG TỶ TRỌNG/i.test(context)) {
+      el.signalBadge.classList.add("buy");
+      el.signalVal.textContent = "TĂNG TỶ TRỌNG";
+    } else if (/\b(SELL|BÁN)\b/i.test(context) && !/\b(MUA|BUY)\b/i.test(context)) {
+      el.signalBadge.classList.add("sell");
+      el.signalVal.textContent = "BÁN (SELL)";
+    } else if (/\b(BUY|MUA)\b/i.test(context) && !/\b(SELL|BÁN)\b/i.test(context)) {
+      el.signalBadge.classList.add("buy");
+      el.signalVal.textContent = "MUA (BUY)";
     } else {
       el.signalBadge.classList.add("hold");
       el.signalVal.textContent = "NẮM GIỮ (HOLD)";
@@ -1352,14 +1406,13 @@ document.addEventListener("DOMContentLoaded", async () => {
     resetDecisionSummary();
 
     // 1. Detect stance / signal
-    const combinedContext = (pmText + " " + traderText).trim();
     let action = extractSectionValue(pmText, ["Action", "Rating"]) || extractSectionValue(traderText, ["Action", "Rating"]);
     if (!action) {
       const ratingMatch = pmText.match(/\*\*Rating\*\*[:\s]*([^\n]+)/i);
       if (ratingMatch) action = ratingMatch[1].replace(/[*#]/g, "").trim();
     }
     const currentSignal = action || (el.signalVal ? el.signalVal.textContent : "HOLD");
-    applySignalBadge(currentSignal, combinedContext);
+    applySignalBadge(currentSignal, pmText);
 
     const activeSignal = (el.signalVal && el.signalVal.textContent ? el.signalVal.textContent : currentSignal).toUpperCase();
     const isSellOrTrim = /UNDERWEIGHT|GIẢM TỶ TRỌNG|TRIM|HẠ TỶ TRỌNG|SELL|BÁN/i.test(activeSignal);
@@ -1403,11 +1456,11 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (el.metricEntry) el.metricEntry.textContent = formatVNDPrice(entryOrExit);
 
     // 3. Extract Stop Loss
-    let stop = extractSectionValue(pmText, ["Stop Loss", "Cắt lỗ", "Mức cắt lỗ", "Giá cắt lỗ", "Ngưỡng cắt lỗ"])
-            || extractSectionValue(traderText, ["Stop Loss", "Cắt lỗ", "Mức cắt lỗ", "Giá cắt lỗ", "Ngưỡng cắt lỗ"]);
+    let stop = extractSectionValue(pmText, ["Stop Loss", "Cắt lỗ", "Dừng lỗ", "Mức cắt lỗ", "Mức dừng lỗ", "Giá cắt lỗ", "Giá dừng lỗ", "Ngưỡng cắt lỗ", "Ngưỡng dừng lỗ"])
+            || extractSectionValue(traderText, ["Stop Loss", "Cắt lỗ", "Dừng lỗ", "Mức cắt lỗ", "Mức dừng lỗ", "Giá cắt lỗ", "Giá dừng lỗ", "Ngưỡng cắt lỗ", "Ngưỡng dừng lỗ"]);
     if (!stop) {
-      const stopMatch = pmText.match(/(?:stop\s*loss|cắt\s*lỗ|mức\s*cắt\s*lỗ|giá\s*cắt\s*lỗ|ngưỡng\s*cắt\s*lỗ|cut\s*loss|thủng)[^\d\n]{0,40}(\d{1,3}(?:[.,]\d{3})+|\d{4,}(?:\.\d+)?)/i)
-                     || traderText.match(/(?:stop\s*loss|cắt\s*lỗ|mức\s*cắt\s*lỗ|giá\s*cắt\s*lỗ|ngưỡng\s*cắt\s*lỗ|cut\s*loss|thủng)[^\d\n]{0,40}(\d{1,3}(?:[.,]\d{3})+|\d{4,}(?:\.\d+)?)/i);
+      const stopMatch = pmText.match(/(?:stop\s*loss|cắt\s*lỗ|dừng\s*lỗ|mức\s*(?:cắt|dừng)\s*lỗ|giá\s*(?:cắt|dừng)\s*lỗ|ngưỡng\s*(?:cắt|dừng)\s*lỗ|cut\s*loss|thủng)[^\d\n]{0,40}(\d{1,3}(?:[.,]\d{3})+|\d{4,}(?:\.\d+)?)/i)
+                     || traderText.match(/(?:stop\s*loss|cắt\s*lỗ|dừng\s*lỗ|mức\s*(?:cắt|dừng)\s*lỗ|giá\s*(?:cắt|dừng)\s*lỗ|ngưỡng\s*(?:cắt|dừng)\s*lỗ|cut\s*loss|thủng)[^\d\n]{0,40}(\d{1,3}(?:[.,]\d{3})+|\d{4,}(?:\.\d+)?)/i);
       if (stopMatch) {
         stop = stopMatch[1];
       }
@@ -1823,11 +1876,18 @@ document.addEventListener("DOMContentLoaded", async () => {
 
         // Signal badge with context awareness (Underweight / Trim)
         const fullContext = (d.final_trade_decision || "") + " " + (d.trader_investment_plan || "");
-        let sig = "HOLD";
-        if (/UNDERWEIGHT|GIẢM TỶ TRỌNG|TRIM/i.test(fullContext)) {
-          sig = "UNDERWEIGHT";
-        } else if (d.final_trade_decision && d.final_trade_decision.includes("Sell")) {
-          sig = "SELL";
+        let sig = (d.signal || "").toUpperCase();
+        if (!sig || sig === "HOLD" || sig === "REVIEW") {
+          const ratingVal = extractSectionValue(d.final_trade_decision || "", ["Action", "Rating"]);
+          if (ratingVal) {
+            sig = ratingVal.toUpperCase();
+          } else if (/UNDERWEIGHT|GIẢM TỶ TRỌNG|TRIM/i.test(fullContext)) {
+            sig = "UNDERWEIGHT";
+          } else if (/\b(SELL|BÁN)\b/i.test(d.final_trade_decision || "")) {
+            sig = "SELL";
+          } else if (/\b(BUY|MUA)\b/i.test(d.final_trade_decision || "")) {
+            sig = "BUY";
+          }
         }
         applySignalBadge(sig, fullContext);
 

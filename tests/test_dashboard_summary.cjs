@@ -21,10 +21,15 @@ assert.equal(el.metricSizing.textContent, '15% - 20% tổng danh mục (thăm d�
 assert.equal(el.pillTargetVal.textContent, '19,950 - 20,000 VND');
 assert.equal(el.pillRatingVal.textContent, 'BUY');
 assert.equal(el.signalVal.textContent, 'MUA (BUY)');
+const vcb = '**Rating**: SELL\nKhuyến nghị BÁN (Sell) toàn bộ vị thế VCB và duy trì tỷ trọng mở mua mới ở mức 0%. Tận dụng nhịp hồi phục kỹ thuật trong phiên lên vùng giá 56.000 - 56.300 VND để bán ra chủ động với giá tốt, đặt mức dừng lỗ tại 57.200 VND nếu giá bất ngờ đảo chiều vượt cản. Mục tiêu điều chỉnh về 54.000 VND';
+context.parseDecisionMetrics(vcb);
+assert.equal(el.signalVal.textContent, 'BÁN (SELL)');
+assert.equal(el.metricEntryLabel.textContent, 'Giá Bán Khuyến Nghị (Exit)');
+assert.equal(el.metricStopLoss.textContent, '57,200 VND');
 context.parseDecisionMetrics('**Action**: Hold');
 for (const key of ['metricEntry', 'metricStopLoss', 'metricSizing', 'pillTargetVal', 'pillHorizonVal']) assert.equal(el[key].textContent, '--');
 assert.equal(context.extractSectionValue('## Entry Price\n19200.0', ['Entry Price']), '19200.0');
-console.log('PASS: BSR → MBB, inline/multiline fields, price range, sizing, missing-field reset');
+console.log('PASS: BSR → MBB → VCB (SELL containing prose mua), inline/multiline fields, price range, sizing, missing-field reset');
 const start = source.indexOf('  async function selectTicker(');
 const end = source.indexOf('\n  // Timeframe switcher', start);
 let resolveOld;
